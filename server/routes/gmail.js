@@ -281,7 +281,7 @@ async function listMessages(gmail, q, maxResults = 50) {
     const response = await gmail.users.messages.list({ userId: 'me', q, maxResults, pageToken });
     for (const m of response.data.messages || []) ids.set(m.id, m);
     pageToken = response.data.nextPageToken;
-  } while (pageToken && ids.size < 150);
+  } while (pageToken && ids.size < 25);
   return ids;
 }
 
@@ -331,15 +331,11 @@ router.get('/messages', async (req, res) => {
 
     // Search bank alerts first. Gmail supports the same query syntax as Gmail search.
     // The bank-specific searches reduce unrelated mail while still allowing a manual custom query.
-    const queries = requested ? [requested] : [
-      'newer_than:180d {from:(ttbbank.com) from:(kasikornbank.com) from:(kbank.co.th) from:(scb.co.th) "เงินเข้า" "เงินออก" "โอนเงิน" "ชำระเงิน"}',
-      'newer_than:180d {"จำนวนเงิน" "ยอดรายการ" "ยอดชำระ" "ยอดโอน" "transaction amount" "payment amount"}',
-      'newer_than:180d {from:(ttbbank.com) from:(kasikornbank.com) from:(scb.co.th) payment purchase transfer transaction receipt}'
-    ];
+    const queries = requested ? [requested] : ["newer_than:180d {from:(ttbbank.com) from:(scb.co.th)}"];
 
     const ids = new Map();
     for (const q of queries) {
-      const found = await listMessages(gmail, q, 50);
+      const found = await listMessages(gmail, q, 25);
       for (const [id, message] of found) ids.set(id, message);
     }
 
@@ -353,7 +349,7 @@ router.get('/messages', async (req, res) => {
     }
 
     candidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-    res.json({ messages: candidates.slice(0, 100), scanned: ids.size });
+    res.json({ messages: candidates.slice(0, 25), scanned: ids.size });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: error.message });
