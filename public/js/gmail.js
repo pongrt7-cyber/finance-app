@@ -20,7 +20,7 @@
             <button id="gmailDisconnectBtn" onclick="disconnectGmail()" class="btn-secondary" style="display:none">ยกเลิกการเชื่อมต่อ</button>
           </div>
           <div id="gmailTools" style="display:none">
-            <div style="display:flex;gap:8px;margin-bottom:14px"><input id="gmailQuery" class="field-input" style="flex:1" value="newer_than:30d" placeholder="เช่น newer_than:30d from:bank@example.com"><button onclick="fetchGmailMessages()" class="btn-primary">ดึงอีเมล</button></div>
+            <div style="display:flex;gap:8px;margin-bottom:14px"><input id="gmailQuery" class="field-input" style="flex:1" value="newer_than:90d" placeholder="เช่น newer_than:30d from:bank@example.com"><button onclick="fetchGmailMessages()" class="btn-primary">ดึงอีเมล</button></div>
             <div id="gmailResults"></div>
           </div>
         </div>
@@ -36,7 +36,7 @@
   };
   window.fetchGmailMessages = async function(){
     const box=document.getElementById('gmailResults'); box.innerHTML='<p>กำลังอ่านอีเมล...</p>';
-    try { const q=encodeURIComponent(document.getElementById('gmailQuery').value||'newer_than:30d'); const d=await gmailFetch('/messages?q='+q+'&limit=30'); state.messages=d.messages||[]; render(); } catch(e){ box.innerHTML=`<p style="color:#b91c1c">${esc(e.message)}</p>`; }
+    try { const q=encodeURIComponent(document.getElementById('gmailQuery').value||'newer_than:90d'); const d=await gmailFetch('/messages?q='+q+'&limit=30'); state.messages=d.messages||[]; render(); } catch(e){ box.innerHTML=`<p style="color:#b91c1c">${esc(e.message)}</p>`; }
   };
   function render(){
     const box=document.getElementById('gmailResults');
