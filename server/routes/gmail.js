@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 // Gmail transaction parser: bank-specific, strict amount detection.
 const crypto = require('crypto');
 const { google } = require('googleapis');
@@ -99,46 +99,13 @@ function numberFrom(value) {
 function parseAmount(subject = '', body = '') {
   const text = normalizeText(`${subject} ${body}`);
   const lower = text.toLowerCase();
-
-  // Never interpret statement/report/order numbers as a transaction amount.
-  if (/(monthly statement|account statement|statement|trade statement|order history|รายการคำสั่งซื้อ|สรุปรายการลงทุน)/i.test(lower)) {
-    return null;
-  }
-
-  const amountNumber = '([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)';
-  const labeled = [
-    new RegExp(`(?:จำนวนเงิน|ยอดรายการ|ยอดธุรกรรม|ยอดชำระ|ยอดโอน|ยอดใช้จ่าย|ยอดเงินที่ทำรายการ|transaction amount|transaction value|payment amount|purchase amount|amount paid|amount|total paid|paid)\\s*[:=]?\\s*(?:THB|฿|บาท)?\\s*${amountNumber}(?:\\s*(?:THB|฿|บาท))?`, 'i'),
-    new RegExp(`(?:จำนวนเงิน|ยอดรายการ|ยอดธุรกรรม|ยอดชำระ|ยอดโอน|ยอดใช้จ่าย|ยอดเงินที่ทำรายการ|transaction amount|transaction value|payment amount|purchase amount|amount paid|amount|total paid|paid)\\s*[:=]?\\s*(?:THB|฿|บาท)?\\s*${amountNumber}`, 'i')
-  ];
-
-  for (const re of labeled) {
-    const m = text.match(re);
-    if (m) {
-      const value = numberFrom(m[1]);
-      if (value != null) return value;
-    }
-  }
-
-  // Explicit Thai transaction sentences. This is intentionally narrower than
-  // matching every number near words such as "เงิน" or "โอน".
-  const explicit = [
-    new RegExp(`(?:โอนเงิน|โอน|ชำระเงิน|ชำระ|จ่าย|ซื้อ|ถอนเงิน|ฝากเงิน|รับเงิน|เงินเข้า|เงินออก)[^0-9]{0,30}(?:THB|฿|บาท)?\\s*${amountNumber}(?:\\s*(?:THB|฿|บาท))?`, 'i'),
-    new RegExp(`(?:THB|฿|บาท)\\s*${amountNumber}[^0-9]{0,20}(?:โอนเงิน|โอน|ชำระเงิน|ชำระ|จ่าย|ซื้อ|ถอนเงิน|ฝากเงิน|รับเงิน|เงินเข้า|เงินออก)`, 'i')
-  ];
-  for (const re of explicit) {
-    const m = text.match(re);
-    if (m) {
-      const value = numberFrom(m[1]);
-      if (value != null) return value;
-    }
-  }
-
-  // English bank alerts often put the amount immediately after a transaction verb.
-  const english = new RegExp(`(?:transfer|payment|purchase|withdrawal|deposit|received|sent|spent)[^0-9]{0,25}(?:THB|฿)?\\s*${amountNumber}(?:\\s*(?:THB|฿))?`, 'i');
-  const em = text.match(english);
-  if (em) return numberFrom(em[1]);
-
-  return null;
+  if (/monthly statement|account statement|trade statement|order history|สรุปรายการลงทุน|ใบแจ้งยอด/i.test(lower)) return null;
+  const n = '([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?|[0-9]+(?:\\.[0-9]{1,2})?)';
+  const labels = '(?:จำนวนเงิน|ยอดรายการ|ยอดธุรกรรม|ยอดชำระ|ยอดโอน|ยอดใช้จ่าย|ยอดเงินที่ทำรายการ|transaction amount|transaction value|payment amount|purchase amount|amount paid|amount|total paid|paid)';
+  const m = text.match(new RegExp(labels + '\\s*[:：=]?\\s*(?:THB|฿|บาท)?\\s*' + n + '\\s*(?:THB|฿|บาท)?', 'i'));
+  if (m) return numberFrom(m[1]);
+  const fallback = text.match(new RegExp('(?:โอนเงิน|โอน|ชำระเงิน|ชำระ|จ่าย|ซื้อ|ถอนเงิน|ฝากเงิน|รับเงิน|เงินเข้า|เงินออก)[^0-9]{0,40}(?:THB|฿)?\\s*' + n + '(?:\\s*(?:THB|฿|บาท))?', 'i'));
+  return fallback ? numberFrom(fallback[1]) : null;
 }
 
 function detectBank(from, subject, body) {
@@ -202,33 +169,13 @@ function merchant(subject, body) {
   return '';
 }
 
-function parseTransactionDate(subject = '', body = '', fallback = '') {
-  const text = normalizeText(`${subject} ${body}`);
-  const thaiMonths = {
-    'ม.ค.': 0, 'ก.พ.': 1, 'มี.ค.': 2, 'เม.ย.': 3, 'พ.ค.': 4, 'มิ.ย.': 5,
-    'ก.ค.': 6, 'ส.ค.': 7, 'ก.ย.': 8, 'ต.ค.': 9, 'พ.ย.': 10, 'ธ.ค.': 11
-  };
-
-  // ttb / SCB commonly provide an explicit transaction date in the body.
-  const thai = text.match(/(?:วันที่ทำรายการ|วันและเวลาการทำรายการ)\\s*[:：]?\\s*(\\d{1,2})\\s+([ก-ฮ]+\\.)\\s+(\\d{2,4})(?:\\s*(?:-\\s*|ณ\\s+))(\\d{1,2}):(\\d{2})(?::(\\d{2}))?/i);
-  if (thai) {
-    const month = thaiMonths[thai[2]];
-    if (month != null) {
-      let year = Number(thai[3]);
-      if (year < 100) year += 2500;
-      if (year >= 2400) year -= 543;
-      const date = new Date(year, month, Number(thai[1]), Number(thai[4]), Number(thai[5]), Number(thai[6] || 0));
-      if (!Number.isNaN(date.getTime())) return date.toISOString();
-    }
-  }
-
-  // Fallback for English bank alerts with an explicit Transaction Date.
-  const english = text.match(/(?:transaction date|transaction datetime|date\\s+and\\s+time)\\s*[:：]?\\s*([^|]{6,60}?)(?=\\s{2,}|reference|ref(?:erence)?\\s*(?:no|number)|$)/i);
-  if (english) {
-    const date = new Date(english[1].trim());
-    if (!Number.isNaN(date.getTime())) return date.toISOString();
-  }
-
+function parseTransactionDate(subject='', body='', fallback='') {
+  const text=normalizeText(subject+' '+body);
+  const months={'ม.ค.':0,'ก.พ.':1,'มี.ค.':2,'เม.ย.':3,'พ.ค.':4,'มิ.ย.':5,'ก.ค.':6,'ส.ค.':7,'ก.ย.':8,'ต.ค.':9,'พ.ย.':10,'ธ.ค.':11};
+  const thai=text.match(/(\d{1,2})\s+(\S+)\s+(\d{2,4})\s*[-\u0e13]\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (thai && months[thai[2]] != null) { let year=Number(thai[3]);if(year<100)year+=2500;if(year>=2400)year-=543;const d=new Date(year,months[thai[2]],Number(thai[1]),Number(thai[4]),Number(thai[5]),Number(thai[6]||0));if(!Number.isNaN(d.getTime()))return d.toISOString();}
+  const english=text.match(/(?:transaction date|transaction datetime|date\s+and\s+time)\s*[::]?\s*([^|\n]{6,60})/i);
+  if(english){const d=new Date(english[1].trim());if(!Number.isNaN(d.getTime()))return d.toISOString();}
   return fallback;
 }
 
