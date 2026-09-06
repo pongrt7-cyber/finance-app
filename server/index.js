@@ -8,6 +8,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+require('./db/gmail-migrate');
+
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/income', require('./routes/income'));
 app.use('/api/categories', require('./routes/categories'));
@@ -19,8 +21,8 @@ app.use('/api/goals', require('./routes/goals'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/data', require('./routes/data'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/gmail', require('./routes/gmail'));
 
-// LINE Bot webhook — mount เฉพาะถ้าตั้งค่า channel secret/token แล้ว (ฟีเจอร์เสริม ไม่บังคับ)
 if (process.env.LINE_CHANNEL_SECRET && process.env.LINE_CHANNEL_ACCESS_TOKEN) {
   app.use('/api/line', require('./routes/line'));
   console.log('LINE Bot webhook enabled at /api/line/webhook');
