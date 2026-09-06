@@ -202,6 +202,36 @@ function merchant(subject, body) {
   return '';
 }
 
+function parseTransactionDate(subject = '', body = '', fallback = '') {
+  const text = normalizeText(`${subject} ${body}`);
+  const thaiMonths = {
+    'ม.ค.': 0, 'ก.พ.': 1, 'มี.ค.': 2, 'เม.ย.': 3, 'พ.ค.': 4, 'มิ.ย.': 5,
+    'ก.ค.': 6, 'ส.ค.': 7, 'ก.ย.': 8, 'ต.ค.': 9, 'พ.ย.': 10, 'ธ.ค.': 11
+  };
+
+  // ttb / SCB commonly provide an explicit transaction date in the body.
+  const thai = text.match(/(?:วันที่ทำรายการ|วันและเวลาการทำรายการ)\\s*[:：]?\\s*(\\d{1,2})\\s+([ก-ฮ]+\\.)\\s+(\\d{2,4})(?:\\s*(?:-\\s*|ณ\\s+))(\\d{1,2}):(\\d{2})(?::(\\d{2}))?/i);
+  if (thai) {
+    const month = thaiMonths[thai[2]];
+    if (month != null) {
+      let year = Number(thai[3]);
+      if (year < 100) year += 2500;
+      if (year >= 2400) year -= 543;
+      const date = new Date(year, month, Number(thai[1]), Number(thai[4]), Number(thai[5]), Number(thai[6] || 0));
+      if (!Number.isNaN(date.getTime())) return date.toISOString();
+    }
+  }
+
+  // Fallback for English bank alerts with an explicit Transaction Date.
+  const english = text.match(/(?:transaction date|transaction datetime|date\\s+and\\s+time)\\s*[:：]?\\s*([^|]{6,60}?)(?=\\s{2,}|reference|ref(?:erence)?\\s*(?:no|number)|$)/i);
+  if (english) {
+    const date = new Date(english[1].trim());
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+
+  return fallback;
+}
+
 function transactionScore(from, subject, body, amount, type) {
   const t = normalizeText(`${from} ${subject} ${body}`).toLowerCase();
   let score = 0;
@@ -218,8 +248,9 @@ function toCandidate(message) {
   const h = message.payload?.headers || [];
   const subject = header(h, 'Subject');
   const from = header(h, 'From');
-  const date = header(h, 'Date');
+  const headerDate = header(h, 'Date');
   const body = bodyFromPayload(message.payload);
+  const date = parseTransactionDate(subject, body, headerDate);
   const bank = detectBank(from, subject, body);
   const amount = parseAmount(subject, body);
   const type = detectType(subject, body);
