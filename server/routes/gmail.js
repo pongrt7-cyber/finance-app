@@ -157,7 +157,7 @@ function detectType(subject, body) {
     /เงินเดือน/, /salary/
   ];
   const expensePatterns = [
-    /เงินออก/, /โอนออก/, /โอนเงินออก/, /ชำระเงิน/, /ชำระ/, /จ่าย/, /ซื้อสินค้า/, /ถอนเงิน/, /หักบัญชี/, /หักเงิน/, /payment/, /purchase/, /debit(?:ed)?/, /withdrawal/, /sent/, /outgoing transfer/, /bill payment/
+    /เงินออก/, /โอนออก/, /โอนเงินออก/, /โอนเงินไป/, /โอนไป/, /รายการโอน/, /โอน.*ธนาคารอื่น/, /ชำระเงิน/, /ชำระ/, /จ่าย/, /ซื้อสินค้า/, /ถอนเงิน/, /หักบัญชี/, /หักเงิน/, /payment/, /purchase/, /debit(?:ed)?/, /withdrawal/, /sent/, /outgoing transfer/, /bill payment/
   ];
 
   const income = incomePatterns.some(re => re.test(t));
