@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>สมุดเงินของฉัน</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1E2A44">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1>สมุดเงินของฉัน</h1>
+      <button id="btnHeaderSettings" class="icon-btn" aria-label="ตั้งค่า">⚙</button>
+    </div>
+  </header>
+
+  <main id="app">
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="view-dashboard" class="view">
+
+      <div class="ticket">
+        <div class="ticket-notch ticket-notch-l"></div>
+        <div class="ticket-notch ticket-notch-r"></div>
+        <p class="ticket-label">ยอดคงเหลือเดือนนี้</p>
+        <p class="ticket-amount" id="dashRemaining">฿0</p>
+        <div class="ticket-row">
+          <span>เงินเดือน <b id="dashSalary">฿0</b></span>
+          <span id="dashUsedPct">ใช้ไป 0%</span>
+        </div>
+        <div class="ticket-bar"><div id="dashUsedBar" class="ticket-bar-fill"></div></div>
+        <p class="ticket-sub">ใช้ได้อีกวันละ ~<b id="dashDailyBudget">฿0</b></p>
+      </div>
+
+      <div class="quick-actions">
+        <button class="qa-btn qa-expense" onclick="openAddTxn('expense')">
+          <span class="qa-icon">−</span> บันทึกรายจ่าย
+        </button>
+        <button class="qa-btn qa-income" onclick="openAddTxn('income')">
+          <span class="qa-icon">+</span> บันทึกรายรับ
+        </button>
+      </div>
+
+      <div id="tctWidget" class="card tct-card hidden">
+        <div class="card-head">
+          <p class="card-title">สิทธิ์โครงการ "ไทยช่วยไทย"</p>
+        </div>
+        <div class="ticket-row">
+          <span class="mono" id="tctUsed">฿0</span>
+          <span class="tct-remain">เหลือ <b class="mono" id="tctRemain">฿0</b></span>
+        </div>
+        <div class="ticket-bar"><div id="tctBar" class="ticket-bar-fill tct-fill"></div></div>
+      </div>
+
+      <div id="budgetWidget" class="card hidden">
+        <div class="card-head"><p class="card-title">งบประมาณใกล้เกิน</p></div>
+        <div id="budgetList" class="budget-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">รายจ่ายตามหมวด</p></div>
+        <div id="categoryBars" class="category-bars"></div>
+        <p id="categoryEmpty" class="empty-note hidden">ยังไม่มีรายจ่ายเดือนนี้</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">รายการล่าสุด</p></div>
+        <ul id="recentList" class="ledger-list"></ul>
+        <p class="swipe-hint">ปัดซ้ายที่รายการเพื่อแก้ไข/ลบ</p>
+      </div>
+
+    </section>
+
+    <!-- ============ STATS ============ -->
+    <section id="view-stats" class="view hidden">
+      <div class="segmented" id="statsRangeTabs">
+        <button data-range="today" class="seg-btn active">วันนี้</button>
+        <button data-range="week" class="seg-btn">สัปดาห์</button>
+        <button data-range="month" class="seg-btn">เดือนนี้</button>
+        <button data-range="year" class="seg-btn">ปีนี้</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">รายรับ vs รายจ่าย</p></div>
+        <canvas id="chartTrend" height="200"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">สรุปยอด</p></div>
+        <div class="stat-grid">
+          <div class="stat-cell">
+            <p class="stat-label">ใช้เงินรวม</p>
+            <p class="stat-value mono" id="statTotal">฿0</p>
+          </div>
+          <div class="stat-cell">
+            <p class="stat-label">รายจ่ายสูงสุด</p>
+            <p class="stat-value mono" id="statTop">฿0</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">แยกตามหมวด</p></div>
+        <ul id="statCategoryList" class="ledger-list"></ul>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section id="view-settings" class="view hidden">
+      <div class="card">
+        <div class="card-head"><p class="card-title">เปลี่ยนรหัสผ่านผู้ดูแล</p></div>
+        <label class="field-label">รหัสผ่านใหม่</label>
+        <input id="setAdminPass" type="password" class="field-input" placeholder="อย่างน้อย 4 ตัวอักษร">
+        <button class="btn-primary" onclick="saveAdminPassword()">บันทึกรหัสผ่าน</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">วงเงิน "ไทยช่วยไทย" ต่อเดือน</p></div>
+        <label class="field-label">จำนวนเงิน (฿)</label>
+        <input id="setTctLimit" type="number" class="field-input" placeholder="0 = ปิดการแสดงผล">
+        <button class="btn-primary" onclick="saveTctLimit()">บันทึกวงเงิน</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">ข้อมูล</p></div>
+        <div class="settings-actions">
+          <a class="btn-secondary" href="/api/data/export/csv">Export CSV</a>
+          <a class="btn-secondary" href="/api/data/export/json">Export JSON</a>
+          <a class="btn-secondary" style="color: var(--ink-red);" href="admin.html">เข้าสู่ Admin</a>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <nav class="bottomnav">
+    <button class="nav-btn active" data-view="dashboard">
+      <span class="nav-icon">⌂</span><span>หน้าหลัก</span>
+    </button>
+    <button class="nav-btn" data-view="stats">
+      <span class="nav-icon">▤</span><span>สถิติ</span>
+    </button>
+    <button class="nav-btn" data-view="settings">
+      <span class="nav-icon">⚙</span><span>ตั้งค่า</span>
+    </button>
+  </nav>
+
+  <!-- ============ ADD TRANSACTION MODAL ============ -->
+  <div id="modalTxn" class="modal-overlay hidden">
+    <div class="modal-sheet">
+      <div class="modal-tabs">
+        <button id="tabExpense" class="modal-tab active" onclick="switchTxnTab('expense')">รายจ่าย</button>
+        <button id="tabIncome" class="modal-tab" onclick="switchTxnTab('income')">รายรับ</button>
+        <button class="modal-close" onclick="closeModal('modalTxn')">✕</button>
+      </div>
+
+      <!-- Expense form -->
+      <div id="formExpense">
+        <div class="ai-row">
+          <input id="aiTextInput" placeholder="พิมพ์เช่น 7-Eleven 58 บาท" class="field-input">
+          <button onclick="parseAiText()" class="btn-ai">AI</button>
+        </div>
+        <label class="field-label">หรืออัปโหลดสลิป/ใบเสร็จ</label>
+        <input id="aiImageInput" type="file" accept="image/*" capture="environment" class="field-file">
+
+        <hr class="divider">
+
+        <label class="field-label">จำนวนเงิน</label>
+        <input id="expAmount" type="number" class="field-input" inputmode="decimal">
+
+        <div class="quick-tags" id="quickCategoryTags"></div>
+
+        <label class="field-label">หมวดหมู่</label>
+        <select id="expCategory" class="field-input"></select>
+
+        <label class="field-label">ร้านค้า / รายละเอียด</label>
+        <input id="expMerchant" class="field-input">
+
+        <label class="field-label">วิธีชำระเงิน</label>
+        <div class="quick-tags" id="paymentTags">
+          <button type="button" class="tag-btn active" data-payment="เงินสด" onclick="selectPayment('เงินสด')">เงินสด</button>
+          <button type="button" class="tag-btn" data-payment="โอน" onclick="selectPayment('โอน')">โอน</button>
+          <button type="button" class="tag-btn" data-payment="ไทยช่วยไทย" onclick="selectPayment('ไทยช่วยไทย')">ไทยช่วยไทย</button>
+        </div>
+
+        <button class="btn-primary btn-expense" onclick="saveExpense()">บันทึกรายจ่าย</button>
+      </div>
+
+      <!-- Income form -->
+      <div id="formIncome" class="hidden">
+        <label class="field-label">ประเภทรายรับ</label>
+        <select id="incType" class="field-input">
+          <option value="salary">เงินเดือนหลัก</option>
+        </select>
+        <p class="field-note">เงินเดือนกรอกได้ครั้งเดียวต่อเดือน หลังบันทึกจะล็อกอัตโนมัติ</p>
+        <label class="field-label">จำนวนเงิน</label>
+        <input id="incAmount" type="number" class="field-input" inputmode="decimal">
+
+        <div id="incomeUnlockBox" class="hidden">
+          <label class="field-label">เงินเดือนถูกล็อกแล้ว กรอกรหัสผ่านเพื่อแก้ไข</label>
+          <input id="unlockPassword" type="password" class="field-input">
+        </div>
+
+        <button class="btn-primary btn-income" onclick="saveIncome()">บันทึกรายรับ</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastHost" class="toast-host"></div>
+
+  <script src="js/api.js"></script>
+  <script src="js/toast.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
