@@ -287,18 +287,16 @@ router.get('/messages', async (req, res) => {
     }
 
     const candidates = [];
-    const diagnostics = [];
     for (const message of ids.values()) {
       const full = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
       const candidate = toCandidate(full.data);
-      if (String(req.query.debug || '') === '1' && diagnostics.length < 25) diagnostics.push({ id: candidate.id, subject: candidate.subject, from: candidate.from, date: candidate.date, bank: candidate.bank, amount: candidate.amount, type: candidate.type, confidence: candidate.confidence, score: candidate.score, detailLength: candidate.detail?.length || 0 });
       if (candidate.amount != null && candidate.type && candidate.confidence !== 'low') {
         candidates.push(candidate);
       }
     }
 
     candidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-    res.json(String(req.query.debug || '') === '1' ? { messages: candidates.slice(0, 25), scanned: ids.size, diagnostics } : { messages: candidates.slice(0, 25), scanned: ids.size });
+    res.json({ messages: candidates.slice(0, 25), scanned: ids.size });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: error.message });
