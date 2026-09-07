@@ -278,7 +278,7 @@ router.get('/messages', async (req, res) => {
 
     // Search bank alerts first. Gmail supports the same query syntax as Gmail search.
     // The bank-specific searches reduce unrelated mail while still allowing a manual custom query.
-    const queries = requested ? [requested] : ["newer_than:180d {from:(ttbbank.com) from:(scb.co.th)}"];
+    const queries = requested ? [requested] : ['newer_than:180d {ttb ไทยพาณิชย์ scb "รายการโอน" "จำนวนเงิน"}'];
 
     const ids = new Map();
     for (const q of queries) {
