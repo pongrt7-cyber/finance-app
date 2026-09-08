@@ -1,8 +1,9 @@
-﻿const express = require('express');
+const express = require('express');
 // Gmail transaction parser: bank-specific, strict amount detection.
 const crypto = require('crypto');
 const { google } = require('googleapis');
 const db = require('../db');
+const { dateText } = require('../utils/date');
 
 const router = express.Router();
 const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
@@ -100,7 +101,7 @@ function parseAmount(subject = '', body = '') {
   const text = normalizeText(`${subject} ${body}`);
   const lower = text.toLowerCase();
   if (/monthly statement|account statement|trade statement|order history|สรุปรายการลงทุน|ใบแจ้งยอด/i.test(lower)) return null;
-  const n = '([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?|[0-9]+(?:\\.[0-9]{1,2})?)';
+  const n = '([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)';
   const labels = '(?:จำนวนเงิน|ยอดรายการ|ยอดธุรกรรม|ยอดชำระ|ยอดโอน|ยอดใช้จ่าย|ยอดเงินที่ทำรายการ|transaction amount|transaction value|payment amount|purchase amount|amount paid|amount|total paid|paid)';
   const m = text.match(new RegExp(labels + '\\s*[:：=]?\\s*(?:THB|฿|บาท)?\\s*' + n + '\\s*(?:THB|฿|บาท)?', 'i'));
   if (m) return numberFrom(m[1]);
@@ -134,8 +135,23 @@ function detectType(subject, body) {
   return null;
 }
 
-function classify(subject, body) {
+function learnedCategory(subject, body, merchantName = '') {
+  const text = normalizeText(`${subject} ${body} ${merchantName}`).toLowerCase();
+  try {
+    const rules = db.prepare(`SELECT cr.pattern, c.name FROM category_rules cr JOIN categories c ON c.id=cr.category_id ORDER BY length(cr.pattern) DESC, cr.use_count DESC`).all();
+    const hit = rules.find(rule => rule.pattern && text.includes(String(rule.pattern).toLowerCase()));
+    return hit?.name || null;
+  } catch {
+    return null;
+  }
+}
+
+function classify(subject, body, merchantName = '') {
+  const learned = learnedCategory(subject, body, merchantName);
+  if (learned) return learned;
   const t = normalizeText(`${subject} ${body}`).toLowerCase();
+  // Transfers are not internet/IT expenses. Keep them neutral unless a real merchant is identified.
+  if (/successfully\s+transfer|success transfer|รายการโอน|โอนเงินเสร็จสมบูรณ์|โอนเงินสำเร็จ/.test(t)) return 'อื่นๆ';
   if (/food|restaurant|cafe|coffee|grabfood|lineman|7-eleven|lotus|big c|makro|อาหาร|ร้านอาหาร|กาแฟ|เครื่องดื่ม|ของกิน/.test(t)) return 'ค่ากิน';
   if (/shopee|lazada|amazon|shopping|ของใช้|สินค้า|ช้อป/.test(t)) return 'ของใช้';
   if (/fuel|gas station|ptt|น้ำมัน|ปั๊ม/.test(t)) return 'ค่าน้ำมัน';
@@ -158,14 +174,28 @@ function merchant(subject, body) {
   ];
   for (const [name, re] of known) if (re.test(t)) return name;
 
-  const patterns = [
-    /(?:ร้านค้า|ผู้รับเงิน|ผู้รับ|ผู้โอน|ปลายทาง|merchant|payee|recipient)\s*[:：-]?\s*([^|,]{2,80})/i,
-    /(?:to|from)\s*[:：-]?\s*([A-Za-z][A-Za-z0-9 .&'-]{2,60})/i
-  ];
-  for (const re of patterns) {
-    const m = t.match(re);
-    if (m) return m[1].trim();
-  }
+  // ttb transfer emails: never use generic English "to/from" extraction.
+  // Footer text can contain phrases such as "of this e-mail", which is not a merchant.
+  const cleanTarget = value => value
+    .trim()
+    .split(/\s+(?:Favorite Nickname|ชื่อรายการโปรด|Amount|จำนวนเงิน|Fee|ค่าธรรมเนียม)\s*[:：-]?/i)[0]
+    .trim();
+
+  const toMobile = t.match(/(?:ToMobile\s*No|ไปยังเบอร์มือถือ)\s*[:：-]?\s*(.{2,80})/i);
+  if (toMobile) return `โอนไป ${cleanTarget(toMobile[1])}`;
+
+  const toCitizen = t.match(/(?:ToCitizen\s*ID\s*\/\s*Tax\s*ID|ไปยังเลขบัตรประชาชน)\s*[:：-]?\s*(.{2,80})/i);
+  if (toCitizen) return `โอนไป ${cleanTarget(toCitizen[1])}`;
+
+  const toAccount = t.match(/(?:To\s*Account|ไปยังบัญชี)\s*[:：-]?\s*(.{2,80})/i);
+  if (toAccount) return `โอนไป ${cleanTarget(toAccount[1])}`;
+
+  const biller = t.match(/(?:Biller\s*Name|ชื่อผู้รับชำระ|ผู้รับชำระ)\s*[:：-]?\s*([^|,]{2,80})/i);
+  if (biller) return biller[1].trim().replace(/\s*\([^)]*\)\s*$/, '').trim();
+
+  const pay = t.match(/(?:ชำระ|ชำระให้|จ่ายให้)\s*[:：-]?\s*([^|,]{2,80})/i);
+  if (pay) return pay[1].trim().replace(/\s*\([^)]*\)\s*$/, '').trim();
+
   return '';
 }
 
@@ -201,6 +231,7 @@ function toCandidate(message) {
   const bank = detectBank(from, subject, body);
   const amount = parseAmount(subject, body);
   const type = detectType(subject, body);
+  const parsedMerchant = merchant(subject, body);
   const score = transactionScore(from, subject, body, amount, type);
   const statement = /monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/i.test(`${subject} ${body}`);
 
@@ -213,22 +244,45 @@ function toCandidate(message) {
     bank,
     amount,
     type,
-    merchant: merchant(subject, body),
-    category: classify(subject, body),
+    merchant: parsedMerchant,
+    category: classify(subject, body, parsedMerchant),
     detail: normalizeText(body).slice(0, 1000),
     score,
     confidence: amount != null && type && !statement && score >= 10 ? 'high' : amount != null && type && !statement && score >= 8 ? 'medium' : 'low'
   };
 }
 
-async function listMessages(gmail, q, maxResults = 50) {
+function importFingerprint(candidate) {
+  const raw = [candidate.type || '', candidate.date || '', Number(candidate.amount || 0).toFixed(2),
+    normalizeText(candidate.merchant || '').toLowerCase(), normalizeText(candidate.subject || '').toLowerCase(),
+    normalizeText(candidate.detail || '').slice(0, 180).toLowerCase()].join('|');
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function normalizeGmailQuery(q = '') {
+  const query = String(q).trim();
+  if (!query) return query;
+  // Accept the common UI form rom:(a) / from:(b) as Gmail OR syntax.
+  return query.replace(/\s*\/\s*/g, ' OR ');
+}
+
+async function listMessages(gmail, q, maxResults = 100) {
   const ids = new Map();
   let pageToken;
+  const hardCap = Math.max(100, Number(maxResults) || 100) * 10;
   do {
-    const response = await gmail.users.messages.list({ userId: 'me', q, maxResults, pageToken });
-    for (const m of response.data.messages || []) ids.set(m.id, m);
+    const response = await gmail.users.messages.list({
+      userId: 'me',
+      q,
+      maxResults: Math.min(100, Math.max(1, Number(maxResults) || 100)),
+      pageToken
+    });
+    for (const m of response.data.messages || []) {
+      ids.set(m.id, m);
+      if (ids.size >= hardCap) break;
+    }
     pageToken = response.data.nextPageToken;
-  } while (pageToken && ids.size < 25);
+  } while (pageToken && ids.size < hardCap);
   return ids;
 }
 
@@ -246,18 +300,30 @@ router.get('/connect', (req, res) => {
 
 router.get('/oauth2callback', async (req, res) => {
   try {
+    if (!req.query.code) {
+      return res.redirect('/?gmail=error&reason=' + encodeURIComponent(req.query.error || 'missing_code'));
+    }
     const client = oauthClient();
     const { tokens } = await client.getToken(req.query.code);
-    client.setCredentials(tokens);
-    saveToken(tokens);
-    const gmail = google.gmail({ version: 'v1', auth: client });
-    const profile = await gmail.users.getProfile({ userId: 'me' });
+    const existing = loadToken();
+    const merged = { ...(existing || {}), ...(tokens || {}) };
+    client.setCredentials(merged);
+    saveToken(merged);
+
+    let email = '';
+    try {
+      const gmail = google.gmail({ version: 'v1', auth: client });
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+      email = profile.data.emailAddress || '';
+    } catch (profileError) {
+      console.error('Gmail profile check failed:', profileError.message);
+    }
     db.prepare("INSERT INTO settings(key,value) VALUES('gmail_email',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-      .run(profile.data.emailAddress || '');
+      .run(email);
     res.redirect('/?gmail=connected');
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Gmail connection failed');
+    console.error('Gmail OAuth callback failed:', error.response?.data || error.message || error);
+    res.redirect('/?gmail=error');
   }
 });
 
@@ -266,40 +332,130 @@ router.post('/disconnect', (req, res) => {
   res.json({ success: true });
 });
 
+const scanCache = new Map();
+const scanInFlight = new Map();
+const scanCooldown = new Map();
+const SCAN_CACHE_MS = 5 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MS = 2 * 60 * 1000;
 router.get('/messages', async (req, res) => {
+  let scanResolve = null;
+  let scanCacheKey = null;
   try {
+    const cacheKey = JSON.stringify({ q: req.query.q || '', from: req.query.from || '', to: req.query.to || '', limit: req.query.limit || '' });
+    scanCacheKey = cacheKey;
+    const now = Date.now();
+    const cooldownUntil = scanCooldown.get(cacheKey) || 0;
+    if (cooldownUntil > now) {
+      const retryAfter = Math.ceil((cooldownUntil - now) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ error: `Gmail ถูกจำกัดชั่วคราว กรุณาลองใหม่ใน ${retryAfter} วินาที` });
+    }
+    const cached = scanCache.get(cacheKey);
+    if (cached && now - cached.at < SCAN_CACHE_MS) return res.json(cached.data);
+    const pending = scanInFlight.get(cacheKey);
+    if (pending) {
+      const shared = await pending;
+      if (shared?.data) return res.json(shared.data);
+      if (shared?.status) return res.status(shared.status).json(shared.body);
+    }
     const token = loadToken();
     if (!token) return res.status(401).json({ error: 'กรุณาเชื่อมต่อ Gmail ก่อน' });
+
+    let resolveShared;
+    const sharedPromise = new Promise(resolve => { resolveShared = resolve; });
+    scanResolve = resolveShared;
+    scanInFlight.set(cacheKey, sharedPromise);
 
     const client = oauthClient();
     client.setCredentials(token);
     const gmail = google.gmail({ version: 'v1', auth: client });
-    const requested = String(req.query.q || '').trim();
+    const requested = normalizeGmailQuery(req.query.q || '');
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    // Gmail date search uses its own timezone semantics. When a month is selected,
+    // start one calendar day earlier so transactions around midnight in Thailand are not missed.
+    const dateFilter = from && to
+      ? ` after:${(() => { const d = new Date(from + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()} before:${to}`
+      : from
+        ? ` after:${(() => { const d = new Date(from + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}`
+        : to
+          ? ` before:${to}`
+          : '';
 
-    // Search bank alerts first. Gmail supports the same query syntax as Gmail search.
-    // The bank-specific searches reduce unrelated mail while still allowing a manual custom query.
-    const queries = requested ? [requested] : ['newer_than:180d {ttb ไทยพาณิชย์ scb "รายการโอน" "จำนวนเงิน"}'];
+    // Apply the selected month/date range directly to every Gmail query.
+    // This is important because Gmail search itself must be restricted; filtering only
+    // in the browser would still scan unrelated months and could make the selector appear broken.
+    const queries = requested ? [`${requested}${dateFilter}`] : [
+      'newer_than:180d {ttb tmbthanachart ttbank}',
+      'newer_than:180d {K PLUS KBank Kasikorn kasikornbank}',
+      'newer_than:180d from:(scb.co.th)',
+      'newer_than:180d {"เงินเข้า" "เงินออก" "โอนเงิน" "ชำระเงิน" "รายการ"}'
+    ].map(q => `${q}${dateFilter}`);
 
     const ids = new Map();
     for (const q of queries) {
-      const found = await listMessages(gmail, q, 25);
+      const found = await listMessages(gmail, q, 100);
       for (const [id, message] of found) ids.set(id, message);
     }
 
     const candidates = [];
+    const importedIds = new Set(
+      db.prepare(`
+        SELECT ie.gmail_id
+        FROM imported_emails ie
+        WHERE ie.kind = 'income'
+           OR (ie.kind = 'expense' AND EXISTS (SELECT 1 FROM expenses e WHERE e.id = ie.expense_id))
+      `).all().map(r => r.gmail_id)
+    );
     for (const message of ids.values()) {
-      const full = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
+      if (importedIds.has(message.id)) continue;
+      let full;
+      try {
+        full = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
+      } catch (error) {
+        const reason = error?.errors?.[0]?.reason;
+        const quota = error?.code === 429 || error?.status === 429 || reason === 'rateLimitExceeded';
+        if (quota) {
+          const retryAfter = Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000);
+          const body = { error: 'Gmail ใช้งานครบโควตาชั่วคราว ระบบหยุดยิงคำขอซ้ำให้แล้ว กรุณาลองใหม่ภายหลัง' };
+          scanCooldown.set(cacheKey, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+          scanInFlight.delete(cacheKey);
+          if (scanResolve) scanResolve({ status: 429, body });
+          res.set('Retry-After', String(retryAfter));
+          return res.status(429).json(body);
+        }
+        throw error;
+      }
       const candidate = toCandidate(full.data);
-      if (candidate.amount != null && candidate.type && candidate.confidence !== 'low') {
+      // After widening the Gmail search by one day, use the transaction date parsed
+      // from the email as the final month boundary so adjacent-month emails stay out.
+      if (from && to && candidate.date) {
+        const targetMonth = from.slice(0, 7);
+        const transactionMonth = String(candidate.date).slice(0, 7);
+        if (transactionMonth !== targetMonth) continue;
+      }
+      const statement = /monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/i.test(`${candidate.subject} ${candidate.detail}`);
+      const transactionEvidence = /successfully|processed successfully|transaction date|amount\s*:/i.test(candidate.detail || '') || /payment|transfer|transaction|เงินเข้า|เงินออก|โอน|ชำระ|จ่าย|ถอน|ฝาก|ซื้อ|รายการ/i.test(`${candidate.subject || ''} ${candidate.detail || ''}`);
+      if (candidate.amount != null && candidate.type && candidate.bank && !statement && transactionEvidence) {
+        candidate.confidence = 'high';
         candidates.push(candidate);
       }
     }
 
     candidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-    res.json({ messages: candidates.slice(0, 25), scanned: ids.size });
+    // Do not cap the combined result at 25: one busy bank (for example TTB)
+    // can otherwise crowd out another bank such as SCB completely.
+    const result = { messages: candidates.slice(0, 100), scanned: ids.size };
+    scanCache.set(cacheKey, { at: Date.now(), data: result });
+    scanInFlight.delete(cacheKey);
+    if (scanResolve) scanResolve({ data: result });
+    res.json(result);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: error.message });
+    const message = error?.message || 'ไม่สามารถอ่านอีเมลจาก Gmail ได้';
+    if (scanCacheKey) scanInFlight.delete(scanCacheKey);
+    if (scanResolve) scanResolve({ status: 500, body: { error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: message } });
+    res.status(500).json({ error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: message });
   }
 });
 
@@ -310,28 +466,36 @@ router.post('/import', async (req, res) => {
   }
 
   try {
-    const exists = db.prepare('SELECT id FROM imported_emails WHERE gmail_id=?').get(candidate.id);
-    if (exists) return res.status(409).json({ error: 'อีเมลนี้ถูกนำเข้าไปแล้ว' });
+    const exists = db.prepare('SELECT id,kind,expense_id FROM imported_emails WHERE gmail_id=?').get(candidate.id);
+    if (exists) {
+      const validExpense = exists.kind === 'expense' && exists.expense_id && db.prepare('SELECT id FROM expenses WHERE id=?').get(exists.expense_id);
+      const validIncome = exists.kind === 'income';
+      if (validExpense || validIncome) return res.json({ success: true, duplicate: true, message: '???????????????????????' });
+      db.prepare('DELETE FROM imported_emails WHERE id=?').run(exists.id);
+    }
+
+    const fingerprint = importFingerprint(candidate);
+    const fingerprintMatch = db.prepare('SELECT id FROM imported_emails WHERE fingerprint=? LIMIT 1').get(fingerprint);
+    if (fingerprintMatch) return res.json({ success: true, duplicate: true, message: 'ตรวจพบธุรกรรมซ้ำจากข้อมูลรายการ' });
 
     if (candidate.type === 'income') {
-      const date = new Date(candidate.date || Date.now());
-      const month = Number.isNaN(date.getTime()) ? new Date().toISOString().slice(0, 7) : date.toISOString().slice(0, 7);
-      const row = db.prepare('SELECT * FROM income WHERE month=?').get(month);
-      if (row) db.prepare('UPDATE income SET amount=amount+? WHERE month=?').run(candidate.amount, month);
-      else db.prepare('INSERT INTO income(amount,month,locked) VALUES(?,?,1)').run(candidate.amount, month);
-      db.prepare('INSERT INTO imported_emails(gmail_id,kind,source) VALUES(?,?,?)').run(candidate.id, 'income', 'gmail');
+      const transactionDate = dateText(candidate.date || Date.now()) || dateText(Date.now());
+      const month = transactionDate.slice(0, 7);
+      db.prepare(`INSERT INTO income_entries
+        (amount,type,title,income_date,month,note,locked,source) VALUES (?,?,?,?,?,?,?,?)`)
+        .run(candidate.amount, 'other', candidate.merchant || 'รายรับจาก Gmail', transactionDate, month, candidate.detail || null, 0, 'gmail');
+      db.prepare('INSERT INTO imported_emails(gmail_id,kind,source,fingerprint) VALUES(?,?,?,?)').run(candidate.id, 'income', 'gmail', fingerprint);
       return res.json({ success: true, type: 'income' });
     }
 
     const category = db.prepare('SELECT id FROM categories WHERE name=?').get(candidate.category)
       || db.prepare("SELECT id FROM categories WHERE name='อื่นๆ'").get();
-    const date = new Date(candidate.date || Date.now());
-    const dateText = Number.isNaN(date.getTime()) ? new Date().toISOString().slice(0, 10) : date.toISOString().slice(0, 10);
+    const parsedDate = dateText(candidate.date || Date.now()) || dateText(Date.now());
     const info = db.prepare(
       'INSERT INTO expenses(amount,category_id,merchant,note,expense_date,source) VALUES(?,?,?,?,?,?)'
-    ).run(candidate.amount, category.id, candidate.merchant || null, candidate.detail || null, dateText, 'gmail');
-    db.prepare('INSERT INTO imported_emails(gmail_id,kind,expense_id,source) VALUES(?,?,?,?)')
-      .run(candidate.id, 'expense', info.lastInsertRowid, 'gmail');
+    ).run(candidate.amount, category.id, candidate.merchant || null, candidate.detail || null, parsedDate, 'gmail');
+    db.prepare('INSERT INTO imported_emails(gmail_id,kind,expense_id,source,fingerprint) VALUES(?,?,?,?,?)')
+      .run(candidate.id, 'expense', info.lastInsertRowid, 'gmail', fingerprint);
     res.json({ success: true, type: 'expense', id: Number(info.lastInsertRowid) });
   } catch (error) {
     console.error(error);

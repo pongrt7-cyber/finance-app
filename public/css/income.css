@@ -1,0 +1,9 @@
+.income-entry-list { margin-top: 18px; border-top: 1px solid var(--hairline); }
+.income-entry-row { display:flex; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--hairline); }
+.income-entry-row > div { flex:1; min-width:0; }
+.income-entry-row b { display:block; font-size:14px; }
+.income-entry-row small { display:block; color:var(--muted); margin-top:2px; }
+.income-entry-row .pos { color:var(--ink-green); white-space:nowrap; }
+.income-lock, .income-delete { font-size:12px; border-radius:999px; padding:4px 8px; }
+.income-lock { color:var(--muted); background:var(--cream); }
+.income-delete { border:1px solid var(--ink-red-bg); background:var(--ink-red-bg); color:var(--ink-red); }

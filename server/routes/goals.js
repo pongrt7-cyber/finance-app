@@ -16,10 +16,13 @@ router.post('/', (req, res) => {
 });
 
 router.put('/:id/add', (req, res) => {
-  const { amount } = req.body;
-  db.prepare('UPDATE savings_goals SET current_amount = current_amount + ? WHERE id = ?')
-    .run(amount, req.params.id);
-  res.json({ success: true });
+  const amount = Number(req.body?.amount || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'จำนวนเงินออมต้องมากกว่า 0' });
+  const goal = db.prepare('SELECT id, target_amount, current_amount FROM savings_goals WHERE id = ?').get(req.params.id);
+  if (!goal) return res.status(404).json({ error: 'ไม่พบเป้าหมายการออม' });
+  const next = Math.min(Number(goal.current_amount || 0) + amount, Number(goal.target_amount || 0));
+  db.prepare('UPDATE savings_goals SET current_amount = ? WHERE id = ?').run(next, req.params.id);
+  res.json({ success: true, current_amount: next, added: Math.max(0, next - Number(goal.current_amount || 0)) });
 });
 
 router.delete('/:id', (req, res) => {

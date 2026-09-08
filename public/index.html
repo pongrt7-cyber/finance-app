@@ -13,6 +13,7 @@
 <meta name="theme-color" content="#1E2A44">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/income.css">
 </head>
 <body>
 
@@ -67,7 +68,10 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><p class="card-title">รายจ่ายตามหมวด</p></div>
+        <div class="card-head category-card-head">
+          <p class="card-title">รายจ่ายตามหมวด</p>
+          <p class="category-total mono" id="categoryTotal">฿0</p>
+        </div>
         <div id="categoryBars" class="category-bars"></div>
         <p id="categoryEmpty" class="empty-note hidden">ยังไม่มีรายจ่ายเดือนนี้</p>
       </div>
@@ -152,6 +156,9 @@
     <button class="nav-btn" data-view="settings">
       <span class="nav-icon">⚙</span><span>ตั้งค่า</span>
     </button>
+    <button class="nav-btn" data-view="gmail-audit" onclick="openGmailAudit(); return false;">
+      <span class="nav-icon">✉</span><span>Gmail Audit</span>
+    </button>
   </nav>
 
   <!-- ============ ADD TRANSACTION MODAL ============ -->
@@ -180,7 +187,12 @@
         <div class="quick-tags" id="quickCategoryTags"></div>
 
         <label class="field-label">หมวดหมู่</label>
-        <select id="expCategory" class="field-input"></select>
+        <div class="category-picker" id="categoryPicker">
+          <input id="expCategory" class="field-input category-input" autocomplete="off" placeholder="เลือกหมวดหมู่ หรือพิมพ์หมวดใหม่ เช่น ค่าซักผ้า" aria-haspopup="listbox" aria-expanded="false">
+          <button type="button" class="category-toggle" id="categoryToggle" aria-label="แสดงหมวดหมู่" aria-expanded="false">⌄</button>
+          <div class="category-menu hidden" id="categoryMenu" role="listbox"></div>
+        </div>
+        <p class="field-note">พิมพ์เพื่อค้นหา หรือเพิ่มหมวดใหม่ได้ทันที</p>
 
         <label class="field-label">ร้านค้า / รายละเอียด</label>
         <input id="expMerchant" class="field-input">
@@ -200,8 +212,17 @@
         <label class="field-label">ประเภทรายรับ</label>
         <select id="incType" class="field-input">
           <option value="salary">เงินเดือนหลัก</option>
+          <option value="side">รายได้เสริม</option>
+          <option value="freelance">ฟรีแลนซ์</option>
+          <option value="bonus">โบนัส</option>
+          <option value="refund">เงินคืน</option>
+          <option value="other">รายรับอื่นๆ</option>
         </select>
-        <p class="field-note">เงินเดือนกรอกได้ครั้งเดียวต่อเดือน หลังบันทึกจะล็อกอัตโนมัติ</p>
+        <label class="field-label">ชื่อรายการ</label>
+        <input id="incTitle" class="field-input" placeholder="เช่น เงินเดือนร้าน / ขายของ">
+        <label class="field-label">วันที่รับเงิน</label>
+        <input id="incDate" type="date" class="field-input">
+        <p class="field-note">เงินเดือนหลักจะล็อกหลังบันทึก ส่วนรายรับประเภทอื่นเพิ่มได้หลายรายการ</p>
         <label class="field-label">จำนวนเงิน</label>
         <input id="incAmount" type="number" class="field-input" inputmode="decimal">
 
@@ -211,6 +232,7 @@
         </div>
 
         <button class="btn-primary btn-income" onclick="saveIncome()">บันทึกรายรับ</button>
+        <div class="income-entry-list" id="incomeEntryList"></div>
       </div>
     </div>
   </div>
@@ -220,7 +242,8 @@
   <script src="js/api.js"></script>
   <script src="js/toast.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/gmail.js"></script>
+  <script src="js/gmail-audit.js"></script>
+  <script src="js/monthly.js"></script>
 </body>
 </html>
-
-<script src="js/gmail.js"></script>

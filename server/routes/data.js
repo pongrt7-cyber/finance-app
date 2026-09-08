@@ -12,7 +12,7 @@ function allExpenses() {
 router.get('/export/json', (req, res) => {
   const payload = {
     exported_at: new Date().toISOString(),
-    income: db.prepare('SELECT * FROM income').all(),
+    income: db.prepare('SELECT * FROM income_entries ORDER BY income_date DESC, id DESC').all(),
     expenses: allExpenses(),
     categories: db.prepare('SELECT * FROM categories').all(),
     budgets: db.prepare('SELECT * FROM budgets').all(),
@@ -54,7 +54,7 @@ router.post('/import/json', (req, res) => {
 });
 
 router.post('/clear', (req, res) => {
-  db.exec('DELETE FROM expenses; DELETE FROM income; DELETE FROM budgets; DELETE FROM savings_goals;');
+  db.exec('DELETE FROM expenses; DELETE FROM income_entries; DELETE FROM income; DELETE FROM budgets; DELETE FROM savings_goals;');
   res.json({ success: true });
 });
 

@@ -8,6 +8,21 @@ CREATE TABLE IF NOT EXISTS income (
   created_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS income_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  amount REAL NOT NULL,
+  type TEXT NOT NULL DEFAULT 'salary',
+  title TEXT,
+  income_date TEXT NOT NULL,
+  month TEXT NOT NULL,
+  note TEXT,
+  locked INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'manual',
+  created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_income_entries_month ON income_entries(month);
+CREATE INDEX IF NOT EXISTS idx_income_entries_date ON income_entries(income_date);
+
 CREATE TABLE IF NOT EXISTS categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -49,6 +64,16 @@ CREATE TABLE IF NOT EXISTS savings_goals (
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS category_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pattern TEXT NOT NULL UNIQUE,
+  category_id INTEGER NOT NULL,
+  use_count INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+  FOREIGN KEY (category_id) REFERENCES categories(id)
 );
 
 INSERT OR IGNORE INTO categories (name, is_default) VALUES

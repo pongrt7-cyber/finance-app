@@ -1,10 +1,8 @@
-const express = require('express');
+﻿const express = require('express');
 const db = require('../db');
+const { currentMonth, currentDate, todayParts } = require('../utils/date');
 const router = express.Router();
 
-function currentMonth() {
-  return new Date().toISOString().slice(0, 7);
-}
 
 function daysInMonth(month) {
   const [y, m] = month.split('-').map(Number);
@@ -12,17 +10,16 @@ function daysInMonth(month) {
 }
 
 function daysPassedInMonth(month) {
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 7);
-  if (todayStr !== month) return daysInMonth(month);
-  return today.getDate();
+  const today = todayParts();
+  if (currentMonth() !== month) return daysInMonth(month);
+  return today.day;
 }
 
 // Dashboard summary for current month
 router.get('/dashboard', (req, res) => {
   const month = currentMonth();
-  const income = db.prepare('SELECT amount FROM income WHERE month = ?').get(month);
-  const salary = income ? income.amount : 0;
+  const income = db.prepare('SELECT COALESCE(SUM(amount),0) AS amount FROM income_entries WHERE month = ?').get(month);
+  const salary = Number(income?.amount || 0);
 
   const totalRow = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -66,19 +63,19 @@ router.get('/dashboard', (req, res) => {
 // Stats for a period: today | week | month | year
 router.get('/period/:range', (req, res) => {
   const { range } = req.params;
-  const today = new Date();
   let from;
 
-  if (range === 'today') from = today.toISOString().slice(0, 10);
+  const localToday = currentDate();
+  if (range === 'today') from = localToday;
   else if (range === 'week') {
-    const d = new Date(today);
+    const d = new Date(`${localToday}T00:00:00`);
     d.setDate(d.getDate() - 7);
     from = d.toISOString().slice(0, 10);
-  } else if (range === 'month') from = today.toISOString().slice(0, 7) + '-01';
-  else if (range === 'year') from = today.toISOString().slice(0, 4) + '-01-01';
-  else return res.status(400).json({ error: 'range ไม่ถูกต้อง (today|week|month|year)' });
+  } else if (range === 'month') from = currentMonth() + '-01';
+  else if (range === 'year') from = currentDate().slice(0, 4) + '-01-01';
+  else return res.status(400).json({ error: 'range à¹„à¸¡à¹ˆà¸–à¸¹à¸à¸•à¹‰à¸­à¸‡ (today|week|month|year)' });
 
-  const to = today.toISOString().slice(0, 10);
+  const to = currentDate();
 
   const total = db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS total FROM expenses

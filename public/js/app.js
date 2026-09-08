@@ -4,17 +4,22 @@ let currentTxnTab = 'expense';
 let currentStatsRange = 'today';
 let currentPayment = 'เงินสด';
 let editingExpenseId = null;
+let editingExpenseDate = null;
+let editingExpenseTime = null;
 
 function fmt(n) {
   const num = Number(n || 0);
   const sign = num < 0 ? '-' : '';
   return sign + '฿' + Math.abs(num).toLocaleString('th-TH', { maximumFractionDigits: 0 });
 }
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 function firstOfMonth() {
-  return new Date().toISOString().slice(0, 7) + '-01';
+  return localDateStr().slice(0, 7) + '-01';
 }
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateStr();
 }
 
 /* ---------------- Navigation ---------------- */
@@ -29,7 +34,10 @@ function switchView(view) {
 }
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => switchView(btn.dataset.view));
+  btn.addEventListener('click', () => {
+    if (btn.dataset.view === 'gmail-audit') return;
+    switchView(btn.dataset.view);
+  });
 });
 document.getElementById('btnHeaderSettings').addEventListener('click', () => switchView('settings'));
 
@@ -54,6 +62,9 @@ async function loadDashboard() {
 
 function renderCategoryBars(data) {
   const wrap = document.getElementById('categoryBars');
+  const totalEl = document.getElementById('categoryTotal');
+  const total = data.reduce((sum, category) => sum + Number(category.total || 0), 0);
+  if (totalEl) totalEl.textContent = fmt(total);
   const empty = document.getElementById('categoryEmpty');
   if (!data.length) {
     wrap.innerHTML = '';
@@ -187,9 +198,15 @@ async function openEditExpense(id) {
     if (!row) return showToast('ไม่พบรายการ', 'error');
 
     editingExpenseId = id;
+    editingExpenseDate = row.expense_date || null;
+    editingExpenseTime = row.expense_time || null;
     openTxnModal('expense');
     document.getElementById('expAmount').value = row.amount;
-    document.getElementById('expCategory').value = row.category_id;
+    document.getElementById('expCategory').value = row.category_name || '';
+    document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => b.classList.remove('active'));
+    openCategoryMenu();
+    const editCategory = categories.find(c => c.name === row.category_name);
+    if (editCategory) selectQuickTag(editCategory.id);
     document.getElementById('expMerchant').value = row.merchant || '';
     selectPayment(row.payment_method || 'เงินสด');
     document.querySelector('#formExpense .btn-primary').textContent = 'บันทึกการแก้ไข';
@@ -214,8 +231,8 @@ function selectPayment(method) {
 
 async function loadCategories() {
   categories = await API.get('/categories');
-  const sel = document.getElementById('expCategory');
-  sel.innerHTML = categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  const list = document.getElementById('categoryMenu');
+  if (list) renderCategoryMenu('');
 
   const quickNames = ['ค่ากิน', 'ค่าน้ำมัน', 'ค่าห้อง', 'ค่าเน็ต'];
   const quickWrap = document.getElementById('quickCategoryTags');
@@ -226,10 +243,25 @@ async function loadCategories() {
 }
 
 function selectQuickTag(categoryId) {
-  document.getElementById('expCategory').value = categoryId;
-  document.querySelectorAll('.tag-btn').forEach(b => {
-    b.classList.toggle('active', Number(b.dataset.id) === categoryId);
+  const category = categories.find(c => Number(c.id) === Number(categoryId));
+  if (!category) return;
+  document.getElementById('expCategory').value = category.name;
+  document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.id) === Number(categoryId));
   });
+}
+
+async function resolveCategoryId(name) {
+  const categoryName = String(name || '').trim();
+  if (!categoryName) return null;
+  const existing = categories.find(c => c.name.trim().toLowerCase() === categoryName.toLowerCase());
+  if (existing) return Number(existing.id);
+
+  const created = await API.post('/categories', { name: categoryName });
+  const category = { id: Number(created.id), name: created.name };
+  categories.push(category);
+
+  return category.id;
 }
 
 /* ---------------- Modal: add transaction ---------------- */
@@ -244,6 +276,8 @@ function openAddTxn(tab) {
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden');
   editingExpenseId = null;
+  editingExpenseDate = null;
+  editingExpenseTime = null;
 }
 
 function switchTxnTab(tab) {
@@ -257,7 +291,8 @@ function switchTxnTab(tab) {
     document.getElementById('aiTextInput').value = '';
     document.getElementById('expAmount').value = '';
     document.getElementById('expMerchant').value = '';
-    document.querySelectorAll('.tag-btn[data-id]').forEach(b => b.classList.remove('active'));
+    document.getElementById('expCategory').value = '';
+    document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => b.classList.remove('active'));
     if (!editingExpenseId) {
       selectPayment('เงินสด');
       document.querySelector('#formExpense .btn-primary').textContent = 'บันทึกรายจ่าย';
@@ -270,29 +305,47 @@ function switchTxnTab(tab) {
 async function prefillIncome() {
   try {
     const current = await API.get('/income/current');
-    document.getElementById('incomeUnlockBox').classList.toggle('hidden', !current.locked);
-    document.getElementById('incAmount').value = current.amount || '';
+    const salary = (current.entries || []).find(e => e.type === 'salary');
+    const type = document.getElementById('incType').value;
+    document.getElementById('incomeUnlockBox').classList.toggle('hidden', type !== 'salary' || !salary?.locked);
+    document.getElementById('incAmount').value = type === 'salary' ? (salary?.amount || '') : '';
+    document.getElementById('incTitle').value = type === 'salary' ? (salary?.title || 'เงินเดือนหลัก') : '';
+    document.getElementById('incDate').value = type === 'salary' ? (salary?.income_date || todayStr()) : todayStr();
+    renderIncomeEntries(current.entries || []);
   } catch { /* ignore */ }
+}
+
+function renderIncomeEntries(entries) {
+  const wrap = document.getElementById('incomeEntryList');
+  if (!wrap) return;
+  const labels = { salary:'เงินเดือนหลัก', side:'รายได้เสริม', freelance:'ฟรีแลนซ์', bonus:'โบนัส', refund:'เงินคืน', other:'รายรับอื่นๆ' };
+  wrap.innerHTML = entries.length ? entries.map(e => `
+    <div class="income-entry-row">
+      <div><b>${e.title || labels[e.type] || 'รายรับ'}</b><small>${e.income_date} · ${labels[e.type] || 'รายรับอื่นๆ'}</small></div>
+      <strong class="mono pos">+${fmt(e.amount)}</strong>
+      ${e.locked ? '<span class="income-lock">ล็อก</span>' : `<button type="button" class="income-delete" onclick="deleteIncome(${e.id})">ลบ</button>`}
+    </div>`).join('') : '<p class="empty-note">ยังไม่มีรายรับเพิ่มเติมในเดือนนี้</p>';
 }
 
 /* ---------------- Save expense ---------------- */
 async function saveExpense() {
   const amount = parseFloat(document.getElementById('expAmount').value);
-  const category_id = document.getElementById('expCategory').value;
+  const categoryName = document.getElementById('expCategory').value.trim();
   const merchant = document.getElementById('expMerchant').value.trim();
   const payment_method = currentPayment;
   if (!amount || amount <= 0) return showToast('กรุณาระบุจำนวนเงิน', 'error');
-  if (!category_id) return showToast('กรุณาเลือกหมวดหมู่', 'error');
+  if (!categoryName) return showToast('กรุณาเลือกหรือพิมพ์หมวดหมู่', 'error');
 
   const now = new Date();
   try {
+    const category_id = await resolveCategoryId(categoryName);
     if (editingExpenseId) {
       await API.put(`/expenses/${editingExpenseId}`, {
         amount, category_id, merchant: merchant || null,
         payment_method,
         is_state_welfare: payment_method === 'ไทยช่วยไทย' ? 1 : 0,
-        expense_date: now.toISOString().slice(0, 10),
-        expense_time: now.toTimeString().slice(0, 5)
+        expense_date: editingExpenseDate || localDateStr(now),
+        expense_time: editingExpenseTime || now.toTimeString().slice(0, 5)
       });
       showToast('แก้ไขรายการแล้ว', 'success');
     } else {
@@ -300,7 +353,7 @@ async function saveExpense() {
         amount, category_id, merchant: merchant || null,
         payment_method,
         is_state_welfare: payment_method === 'ไทยช่วยไทย' ? 1 : 0,
-        expense_date: now.toISOString().slice(0, 10),
+        expense_date: localDateStr(now),
         expense_time: now.toTimeString().slice(0, 5),
         source: 'manual'
       });
@@ -339,8 +392,8 @@ function applyParsedExpense(parsed) {
   if (parsed.category) {
     const match = categories.find(c => c.name === parsed.category);
     if (match) {
-      document.getElementById('expCategory').value = match.id;
-      selectQuickTag(match.id);
+      document.getElementById('expCategory').value = match.name;
+      selectCategory(match);
     }
   }
 }
@@ -348,21 +401,37 @@ function applyParsedExpense(parsed) {
 /* ---------------- Save income ---------------- */
 async function saveIncome() {
   const amount = parseFloat(document.getElementById('incAmount').value);
+  const type = document.getElementById('incType').value;
+  const title = document.getElementById('incTitle').value.trim();
+  const income_date = document.getElementById('incDate').value || todayStr();
   if (!amount || amount <= 0) return showToast('กรุณาระบุจำนวนเงิน', 'error');
+  if (!title) return showToast('กรุณาระบุชื่อรายการ', 'error');
 
   const unlockBox = document.getElementById('incomeUnlockBox');
   try {
-    if (!unlockBox.classList.contains('hidden')) {
+    if (type === 'salary' && !unlockBox.classList.contains('hidden')) {
       const password = document.getElementById('unlockPassword').value;
       const { token } = await API.post('/auth/unlock', { password });
       API.setToken(token);
     }
-    await API.post('/income', { amount });
-    closeModal('modalTxn');
+    await API.post('/income', { amount, type, title, income_date });
     showToast('บันทึกรายรับแล้ว', 'success');
+    await prefillIncome();
     loadDashboard();
   } catch (e) { showToast(e.message, 'error'); }
 }
+
+async function deleteIncome(id) {
+  if (!confirm('ลบรายรับรายการนี้?')) return;
+  try {
+    await API.del(`/income/${id}`);
+    showToast('ลบรายรับแล้ว', 'success');
+    await prefillIncome();
+    loadDashboard();
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+document.getElementById('incType')?.addEventListener('change', prefillIncome);
 
 /* ---------------- Stats view ---------------- */
 document.querySelectorAll('#statsRangeTabs .seg-btn').forEach(btn => {
@@ -463,5 +532,96 @@ if ('serviceWorker' in navigator) {
 
 (async function init() {
   await loadCategories();
+  initCategoryPicker();
   await loadDashboard();
 })();
+
+
+/* ---------------- Custom category dropdown ---------------- */
+function closeCategoryMenu() {
+  const menu = document.getElementById('categoryMenu');
+  const input = document.getElementById('expCategory');
+  const toggle = document.getElementById('categoryToggle');
+  if (!menu) return;
+  menu.classList.add('hidden');
+  input?.setAttribute('aria-expanded', 'false');
+  toggle?.setAttribute('aria-expanded', 'false');
+}
+
+function openCategoryMenu() {
+  renderCategoryMenu(document.getElementById('expCategory')?.value || '');
+  document.getElementById('categoryMenu')?.classList.remove('hidden');
+  document.getElementById('expCategory')?.setAttribute('aria-expanded', 'true');
+  document.getElementById('categoryToggle')?.setAttribute('aria-expanded', 'true');
+}
+
+function renderCategoryMenu(query = '') {
+  const menu = document.getElementById('categoryMenu');
+  if (!menu) return;
+  const q = String(query).trim().toLowerCase();
+  const filtered = categories.filter(c => c.name.toLowerCase().includes(q));
+  menu.innerHTML = '';
+
+  filtered.forEach(category => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'category-option';
+    item.setAttribute('role', 'option');
+    item.textContent = category.name;
+    item.addEventListener('mousedown', e => e.preventDefault());
+    item.addEventListener('click', () => selectCategory(category));
+    menu.appendChild(item);
+  });
+
+  const exact = categories.some(c => c.name.trim().toLowerCase() === q && q);
+  if (q && !exact) {
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'category-option category-create';
+    create.setAttribute('role', 'option');
+    create.textContent = `เพิ่มหมวด “${String(query).trim()}”`;
+    create.addEventListener('mousedown', e => e.preventDefault());
+    create.addEventListener('click', () => {
+      document.getElementById('expCategory').value = String(query).trim();
+      document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => b.classList.remove('active'));
+      closeCategoryMenu();
+      document.getElementById('expCategory').focus();
+    });
+    menu.appendChild(create);
+  }
+
+  if (!menu.children.length) {
+    const empty = document.createElement('div');
+    empty.className = 'category-empty';
+    empty.textContent = 'ไม่พบหมวดหมู่นี้';
+    menu.appendChild(empty);
+  }
+}
+
+function selectCategory(category) {
+  document.getElementById('expCategory').value = category.name;
+  document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.id) === Number(category.id));
+  });
+  closeCategoryMenu();
+}
+
+function initCategoryPicker() {
+  const input = document.getElementById('expCategory');
+  const toggle = document.getElementById('categoryToggle');
+  const picker = document.getElementById('categoryPicker');
+  if (!input || !toggle || !picker) return;
+  toggle.addEventListener('click', () => {
+    const menu = document.getElementById('categoryMenu');
+    menu.classList.contains('hidden') ? openCategoryMenu() : closeCategoryMenu();
+  });
+  input.addEventListener('focus', openCategoryMenu);
+  input.addEventListener('input', () => renderCategoryMenu(input.value));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeCategoryMenu();
+    if (e.key === 'ArrowDown') { e.preventDefault(); openCategoryMenu(); }
+  });
+  document.addEventListener('click', e => {
+    if (!picker.contains(e.target)) closeCategoryMenu();
+  });
+}

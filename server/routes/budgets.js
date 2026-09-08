@@ -1,10 +1,8 @@
-const express = require('express');
+﻿const express = require('express');
 const db = require('../db');
+const { currentMonth } = require('../utils/date');
 const router = express.Router();
 
-function currentMonth() {
-  return new Date().toISOString().slice(0, 7);
-}
 
 router.get('/', (req, res) => {
   const month = currentMonth();
@@ -21,7 +19,7 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   const { category_id, monthly_limit } = req.body;
-  if (!category_id || !monthly_limit) return res.status(400).json({ error: 'ข้อมูลไม่ครบ' });
+  if (!category_id || !monthly_limit) return res.status(400).json({ error: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹„à¸¡à¹ˆà¸„à¸£à¸š' });
   db.prepare(`
     INSERT INTO budgets (category_id, monthly_limit) VALUES (?, ?)
     ON CONFLICT(category_id) DO UPDATE SET monthly_limit = excluded.monthly_limit

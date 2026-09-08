@@ -2,6 +2,27 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
+function normalizeRuleText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[0-9][0-9,./:-]*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function rememberCategory(expense, categoryId) {
+  const merchant = normalizeRuleText(expense.merchant);
+  if (!merchant || merchant.length < 2) return;
+  db.prepare(`
+    INSERT INTO category_rules(pattern, category_id, use_count, updated_at)
+    VALUES(?,?,1,datetime('now','localtime'))
+    ON CONFLICT(pattern) DO UPDATE SET
+      category_id=excluded.category_id,
+      use_count=category_rules.use_count+1,
+      updated_at=datetime('now','localtime')
+  `).run(merchant, categoryId);
+}
+
 // GET expenses with optional filters: date range, category, search, payment
 router.get('/', (req, res) => {
   const { from, to, category_id, q, payment_method } = req.query;
@@ -66,12 +87,25 @@ router.post('/', (req, res) => {
 // PUT update
 router.put('/:id', (req, res) => {
   const { amount, category_id, merchant, note, payment_method, is_state_welfare, expense_date, expense_time } = req.body;
+  const existing = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'ไม่พบรายการรายจ่าย' });
   db.prepare(`
     UPDATE expenses SET
       amount = ?, category_id = ?, merchant = ?, note = ?,
       payment_method = ?, is_state_welfare = ?, expense_date = ?, expense_time = ?
     WHERE id = ?
-  `).run(amount, category_id, merchant, note, payment_method, is_state_welfare ? 1 : 0, expense_date, expense_time, req.params.id);
+  `).run(
+    amount ?? existing.amount,
+    category_id ?? existing.category_id,
+    merchant ?? existing.merchant ?? null,
+    note ?? existing.note ?? null,
+    payment_method ?? existing.payment_method ?? 'เงินสด',
+    is_state_welfare == null ? existing.is_state_welfare : (is_state_welfare ? 1 : 0),
+    expense_date ?? existing.expense_date,
+    expense_time ?? existing.expense_time ?? null,
+    req.params.id
+  );
+  rememberCategory({ ...existing, ...req.body }, category_id ?? existing.category_id);
   res.json({ success: true });
 });
 
