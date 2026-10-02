@@ -1,13 +1,21 @@
-// Uses Node's native sqlite module (Node >=22.5 with --experimental-sqlite,
-// stable in Node 24+). Avoids better-sqlite3 native compilation issues.
-const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'finance.db');
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+const tursoUrl = String(process.env.TURSO_DATABASE_URL || '').trim();
+const tursoToken = String(process.env.TURSO_AUTH_TOKEN || '').trim();
 
-const db = new DatabaseSync(DB_PATH);
+let db;
+
+if (tursoUrl && tursoToken) {
+  const Database = require('libsql');
+  db = new Database(tursoUrl, { authToken: tursoToken });
+} else {
+  const { DatabaseSync } = require('node:sqlite');
+  const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'finance.db');
+  db = new DatabaseSync(DB_PATH);
+}
+
 db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
 
 module.exports = db;

@@ -10,3 +10,6 @@ npm-debug.log*
 *.bak
 server-error.log
 server.log
+*.sql
+turso-token.txt
+turso-db-token.txt
