@@ -3,7 +3,9 @@ const express = require('express');
 const crypto = require('crypto');
 const { google } = require('googleapis');
 const db = require('../db');
-const { dateText } = require('../utils/date');
+const { dateText, TZ } = require('../utils/date');
+const { findCrossSourceDuplicate } = require('../utils/duplicate');
+const { createGmailPush } = require('../utils/gmail-push');
 
 const router = express.Router();
 const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
@@ -46,6 +48,34 @@ function saveToken(token) {
 function loadToken() {
   const row = db.prepare("SELECT value FROM settings WHERE key='gmail_oauth'").get();
   return row ? JSON.parse(unseal(row.value)) : null;
+}
+
+function getSetting(key) {
+  return db.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value || null;
+}
+
+function setSetting(key, value) {
+  db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(key, String(value));
+}
+
+function gmailPubSubTopic() {
+  return String(process.env.GMAIL_PUBSUB_TOPIC || '').trim();
+}
+
+async function verifyPubSubRequest(req) {
+  const auth = String(req.headers.authorization || '');
+  if (!auth.startsWith('Bearer ')) throw new Error('missing_pubsub_auth');
+  const token = auth.slice(7).trim();
+  const audience = String(process.env.GMAIL_PUBSUB_AUDIENCE || '').trim();
+  const serviceAccount = String(process.env.GMAIL_PUBSUB_SERVICE_ACCOUNT || '').trim();
+  if (!audience || !serviceAccount) throw new Error('pubsub_auth_not_configured');
+
+  const client = new google.auth.OAuth2();
+  const ticket = await client.verifyIdToken({ idToken: token, audience });
+  const payload = ticket.getPayload() || {};
+  if (payload.email !== serviceAccount) throw new Error('unexpected_pubsub_service_account');
+  return payload;
 }
 
 function header(headers, name) {
@@ -209,14 +239,20 @@ function parseTransactionDate(subject='', body='', fallback='') {
   return fallback;
 }
 
-function transactionScore(from, subject, body, amount, type) {
+function transactionScore(from, subject, body, amount, type, parsedDate, merchantName) {
   const t = normalizeText(`${from} ${subject} ${body}`).toLowerCase();
   let score = 0;
-  if (amount != null) score += 4;
-  if (type) score += 4;
-  if (detectBank(from, subject, body)) score += 2;
-  if (/payment|purchase|transfer|transaction|receipt|invoice|debit|credit|deposit|withdrawal|ชำระ|โอน|เงินเข้า|เงินออก|รายการ/.test(t)) score += 2;
-  if (/otp|verification code|login|password|newsletter|unsubscribe|promotion|โปรโมชั่น|รหัส otp/.test(t)) score -= 8;
+  if (amount != null) score += 3;
+  if (type) score += 3;
+  const bank = detectBank(from, subject, body);
+  if (bank) score += 1;
+  const transactionSignal = /payment|purchase|transfer|transaction|receipt|invoice|debit|credit|deposit|withdrawal|ชำระ|โอน|เงินเข้า|เงินออก|รายการ/.test(t);
+  if (transactionSignal) score += 2;
+  if (parsedDate && !/^[A-Za-z]{3},/.test(String(parsedDate))) score += 1;
+  if (merchantName) score += 1;
+  // Bank transaction emails often contain security/footer text such as "password"
+  // or "login". Do not downgrade a message that already has strong transaction evidence.
+  if (!transactionSignal && /otp|verification code|login|password|newsletter|unsubscribe|promotion|โปรโมชั่น|รหัส otp/.test(t)) score -= 6;
   if (/monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/.test(t)) score -= 10;
   return score;
 }
@@ -232,7 +268,7 @@ function toCandidate(message) {
   const amount = parseAmount(subject, body);
   const type = detectType(subject, body);
   const parsedMerchant = merchant(subject, body);
-  const score = transactionScore(from, subject, body, amount, type);
+  const score = transactionScore(from, subject, body, amount, type, date, parsedMerchant);
   const statement = /monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/i.test(`${subject} ${body}`);
 
   return {
@@ -248,14 +284,19 @@ function toCandidate(message) {
     category: classify(subject, body, parsedMerchant),
     detail: normalizeText(body).slice(0, 1000),
     score,
-    confidence: amount != null && type && !statement && score >= 10 ? 'high' : amount != null && type && !statement && score >= 8 ? 'medium' : 'low'
+    confidence: amount != null && type && !statement && score >= 8 ? 'high' : amount != null && type && !statement && score >= 6 ? 'medium' : 'low'
   };
 }
 
 function importFingerprint(candidate) {
-  const raw = [candidate.type || '', candidate.date || '', Number(candidate.amount || 0).toFixed(2),
-    normalizeText(candidate.merchant || '').toLowerCase(), normalizeText(candidate.subject || '').toLowerCase(),
-    normalizeText(candidate.detail || '').slice(0, 180).toLowerCase()].join('|');
+  const merchantName = normalizeText(candidate.merchant || '').toLowerCase();
+  // Require a precise transaction timestamp plus merchant/recipient. This avoids
+  // merging two legitimate same-day purchases for the same amount and merchant.
+  if (!merchantName || !candidate.date) return null;
+  const parsed = new Date(candidate.date);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const timestamp = parsed.toISOString().slice(0, 16);
+  const raw = [candidate.type || '', timestamp, Number(candidate.amount || 0).toFixed(2), merchantName].join('|');
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
@@ -264,6 +305,23 @@ function normalizeGmailQuery(q = '') {
   if (!query) return query;
   // Accept the common UI form rom:(a) / from:(b) as Gmail OR syntax.
   return query.replace(/\s*\/\s*/g, ' OR ');
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function getMessageWithBackoff(gmail, id, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+    } catch (error) {
+      const reason = error?.errors?.[0]?.reason;
+      const quota = error?.code === 429 || error?.status === 429 || reason === 'rateLimitExceeded';
+      if (!quota || attempt >= maxRetries) throw error;
+      await sleep(1000 * (2 ** attempt));
+    }
+  }
 }
 
 async function listMessages(gmail, q, maxResults = 100) {
@@ -286,9 +344,44 @@ async function listMessages(gmail, q, maxResults = 100) {
   return ids;
 }
 
+const gmailPush = createGmailPush({
+  db,
+  google,
+  oauthClient,
+  topic: String(process.env.GMAIL_PUBSUB_TOPIC || '').trim(),
+  loadToken,
+  getMessageWithBackoff,
+  listMessages,
+  toCandidate
+});
+
 router.get('/status', (req, res) => {
   const row = db.prepare("SELECT value FROM settings WHERE key='gmail_email'").get();
-  res.json({ connected: !!loadToken(), email: row?.value || null });
+  const expiration = Number(db.prepare("SELECT value FROM settings WHERE key='gmail_watch_expiration'").get()?.value || 0);
+  const pushConfigured = !!String(process.env.GMAIL_PUBSUB_TOPIC || '').trim();
+  res.json({
+    connected: !!loadToken(),
+    email: row?.value || null,
+    push: { configured: pushConfigured, active: expiration > Date.now(), expiration: expiration || null }
+  });
+});
+
+router.post('/pubsub', async (req, res) => {
+  try {
+    await verifyPubSubRequest(req);
+    const encoded = req.body?.message?.data;
+    if (!encoded) return res.status(204).end();
+    const notification = JSON.parse(Buffer.from(String(encoded), 'base64').toString('utf8'));
+    if (!notification.historyId) return res.status(204).end();
+    const result = await gmailPush.processGmailHistory(String(notification.historyId));
+    console.log('Gmail push processed:', result);
+    return res.status(204).end();
+  } catch (error) {
+    const authError = /missing_pubsub_auth|pubsub_auth_not_configured|unexpected_pubsub_service_account/i.test(String(error.message || ''));
+    if (authError) return res.status(401).json({ error: 'Pub/Sub authentication failed' });
+    console.error('Gmail push webhook failed:', error);
+    return res.status(500).json({ error: 'Gmail push processing failed' });
+  }
 });
 
 router.get('/connect', (req, res) => {
@@ -335,23 +428,58 @@ router.post('/disconnect', (req, res) => {
 const scanCache = new Map();
 const scanInFlight = new Map();
 const scanCooldown = new Map();
+const scanProgress = new Map();
 const SCAN_CACHE_MS = 5 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 2 * 60 * 1000;
+const SCAN_PROGRESS_TTL_MS = 10 * 60 * 1000;
+
+function setScanProgress(scanId, patch) {
+  if (!scanId) return;
+  const prev = scanProgress.get(scanId) || {};
+  scanProgress.set(scanId, { ...prev, ...patch, updatedAt: Date.now() });
+}
+
+function clearScanProgressLater(scanId) {
+  if (!scanId) return;
+  setTimeout(() => scanProgress.delete(scanId), SCAN_PROGRESS_TTL_MS).unref?.();
+}
+
+router.get('/scan-progress', (req, res) => {
+  const scanId = String(req.query.scanId || '').trim();
+  const progress = scanProgress.get(scanId);
+  if (!progress) return res.status(404).json({ error: 'ไม่พบสถานะการสแกน' });
+  res.json(progress);
+});
 router.get('/messages', async (req, res) => {
   let scanResolve = null;
   let scanCacheKey = null;
+  const scanId = String(req.headers['x-scan-id'] || crypto.randomUUID());
   try {
     const cacheKey = JSON.stringify({ q: req.query.q || '', from: req.query.from || '', to: req.query.to || '', limit: req.query.limit || '' });
+    setScanProgress(scanId, {
+      status: 'running', stage: 'เตรียมการ', message: 'กำลังเตรียมค้นหา Gmail...', percent: 2,
+      current: 0, total: 0, scanId
+    });
     scanCacheKey = cacheKey;
     const now = Date.now();
     const cooldownUntil = scanCooldown.get(cacheKey) || 0;
     if (cooldownUntil > now) {
       const retryAfter = Math.ceil((cooldownUntil - now) / 1000);
+      setScanProgress(scanId, {
+        status: 'rate_limited', stage: 'พักการยิงคำขอ',
+        message: `Gmail ถูกจำกัดชั่วคราว ระบบหยุดส่งคำขอซ้ำ`,
+        percent: 100, retryAfter, current: 0, total: 0, scanId
+      });
+      clearScanProgressLater(scanId);
       res.set('Retry-After', String(retryAfter));
       return res.status(429).json({ error: `Gmail ถูกจำกัดชั่วคราว กรุณาลองใหม่ใน ${retryAfter} วินาที` });
     }
     const cached = scanCache.get(cacheKey);
-    if (cached && now - cached.at < SCAN_CACHE_MS) return res.json(cached.data);
+    if (cached && now - cached.at < SCAN_CACHE_MS) {
+      setScanProgress(scanId, { status: 'done', stage: 'เสร็จสิ้น', message: 'ใช้ผลสแกนที่แคชไว้ ไม่ต้องยิง Gmail ซ้ำ', percent: 100, current: cached.data.messages?.length || 0, total: cached.data.scanned || 0, scanId });
+      clearScanProgressLater(scanId);
+      return res.json(cached.data);
+    }
     const pending = scanInFlight.get(cacheKey);
     if (pending) {
       const shared = await pending;
@@ -359,7 +487,14 @@ router.get('/messages', async (req, res) => {
       if (shared?.status) return res.status(shared.status).json(shared.body);
     }
     const token = loadToken();
-    if (!token) return res.status(401).json({ error: 'กรุณาเชื่อมต่อ Gmail ก่อน' });
+    if (!token) {
+      setScanProgress(scanId, {
+        status: 'error', stage: 'หยุดการสแกน',
+        message: 'กรุณาเชื่อมต่อ Gmail ก่อน', percent: 0, current: 0, total: 0, scanId
+      });
+      clearScanProgressLater(scanId);
+      return res.status(401).json({ error: 'กรุณาเชื่อมต่อ Gmail ก่อน' });
+    }
 
     let resolveShared;
     const sharedPromise = new Promise(resolve => { resolveShared = resolve; });
@@ -385,20 +520,43 @@ router.get('/messages', async (req, res) => {
     // Apply the selected month/date range directly to every Gmail query.
     // This is important because Gmail search itself must be restricted; filtering only
     // in the browser would still scan unrelated months and could make the selector appear broken.
-    const queries = requested ? [`${requested}${dateFilter}`] : [
-      'newer_than:180d {ttb tmbthanachart ttbank}',
-      'newer_than:180d {K PLUS KBank Kasikorn kasikornbank}',
-      'newer_than:180d from:(scb.co.th)',
-      'newer_than:180d {"เงินเข้า" "เงินออก" "โอนเงิน" "ชำระเงิน" "รายการ"}'
-    ].map(q => `${q}${dateFilter}`);
+    // Narrow the historical search to likely transaction emails before fetching full bodies.
+    // The bank condition and transaction condition must both match, reducing API calls and noise.
+    const transactionTerms = '{payment transfer transaction receipt invoice debit credit deposit withdrawal refund cashback ชำระ โอน เงินเข้า เงินออก รายการ รับเงิน ฝาก เงินเดือน}';
+    const bankQueries = [
+      `{ttb tmbthanachart ttbank} ${transactionTerms}`,
+      `{K PLUS KBank Kasikorn kasikornbank} ${transactionTerms}`,
+      `from:(scb.co.th) ${transactionTerms}`,
+      `{SCB "SCB EASY"} ${transactionTerms}`
+    ];
+    // A selected month must be allowed to reach older Gmail history. Keep the
+    // 180-day limit only for an unbounded/manual scan to reduce quota usage.
+    const recentFilter = dateFilter ? '' : ' newer_than:180d';
+    const queries = requested
+      ? [`${requested}${dateFilter}`]
+      : bankQueries.map(q => `${q}${recentFilter}${dateFilter}`);
 
     const ids = new Map();
-    for (const q of queries) {
+    setScanProgress(scanId, { stage: 'ค้นหา', message: 'กำลังค้นหา Gmail จากแต่ละแหล่ง...', percent: 5, current: 0, total: queries.length, scanId });
+    for (let qi = 0; qi < queries.length; qi++) {
+      const q = queries[qi];
+      setScanProgress(scanId, {
+        stage: 'ค้นหา',
+        message: `กำลังค้นหาแหล่งที่ ${qi + 1}/${queries.length}`,
+        percent: Math.min(10 + Math.round((qi / queries.length) * 25), 35),
+        current: qi + 1, total: queries.length, scanId
+      });
       const found = await listMessages(gmail, q, 100);
       for (const [id, message] of found) ids.set(id, message);
     }
 
     const candidates = [];
+    const reviewCandidates = [];
+    setScanProgress(scanId, {
+      stage: 'วิเคราะห์',
+      message: `พบอีเมล ${ids.size.toLocaleString()} รายการ กำลังวิเคราะห์ธุรกรรม...`,
+      percent: 40, current: 0, total: ids.size, scanId
+    });
     const importedIds = new Set(
       db.prepare(`
         SELECT ie.gmail_id
@@ -407,45 +565,103 @@ router.get('/messages', async (req, res) => {
            OR (ie.kind = 'expense' AND EXISTS (SELECT 1 FROM expenses e WHERE e.id = ie.expense_id))
       `).all().map(r => r.gmail_id)
     );
-    for (const message of ids.values()) {
-      if (importedIds.has(message.id)) continue;
-      let full;
-      try {
-        full = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
-      } catch (error) {
-        const reason = error?.errors?.[0]?.reason;
-        const quota = error?.code === 429 || error?.status === 429 || reason === 'rateLimitExceeded';
-        if (quota) {
-          const retryAfter = Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000);
-          const body = { error: 'Gmail ใช้งานครบโควตาชั่วคราว ระบบหยุดยิงคำขอซ้ำให้แล้ว กรุณาลองใหม่ภายหลัง' };
-          scanCooldown.set(cacheKey, Date.now() + RATE_LIMIT_COOLDOWN_MS);
-          scanInFlight.delete(cacheKey);
-          if (scanResolve) scanResolve({ status: 429, body });
-          res.set('Retry-After', String(retryAfter));
-          return res.status(429).json(body);
+    let processed = 0;
+    let quotaError = null;
+    let workerError = null;
+    const messages = Array.from(ids.values());
+    let nextIndex = 0;
+    const worker = async () => {
+      while (true) {
+        if (quotaError || workerError) return;
+        const index = nextIndex++;
+        if (index >= messages.length) return;
+        const message = messages[index];
+
+        if (importedIds.has(message.id)) {
+          processed++;
+          setScanProgress(scanId, {
+            stage: 'วิเคราะห์',
+            message: `ข้ามรายการที่นำเข้าแล้ว ${processed}/${ids.size}`,
+            percent: ids.size ? 40 + Math.round((processed / ids.size) * 55) : 95,
+            current: processed, total: ids.size, scanId
+          });
+          continue;
         }
-        throw error;
+
+        let full;
+        try {
+          full = await getMessageWithBackoff(gmail, message.id);
+        } catch (error) {
+          const reason = error?.errors?.[0]?.reason;
+          const quota = error?.code === 429 || error?.status === 429 || reason === 'rateLimitExceeded';
+          if (quota) {
+            quotaError = error;
+            return;
+          }
+          workerError = error;
+          return;
+        }
+
+        processed++;
+        const candidate = toCandidate(full.data);
+        setScanProgress(scanId, {
+          stage: 'วิเคราะห์',
+          message: `กำลังวิเคราะห์อีเมล ${processed}/${ids.size}`,
+          percent: ids.size ? 40 + Math.round((processed / ids.size) * 55) : 95,
+          current: processed, total: ids.size, scanId
+        });
+        // After widening the Gmail search by one day, use the transaction date parsed
+        // from the email as the final month boundary so adjacent-month emails stay out.
+        if (from && to && candidate.date) {
+          const targetMonth = from.slice(0, 7);
+          const transactionMonth = String(candidate.date).slice(0, 7);
+          if (transactionMonth !== targetMonth) continue;
+        }
+        const statement = /monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/i.test(`${candidate.subject} ${candidate.detail}`);
+        const transactionEvidence = /successfully|processed successfully|transaction date|amount\s*:/i.test(candidate.detail || '') || /payment|transfer|transaction|เงินเข้า|เงินออก|โอน|ชำระ|จ่าย|ถอน|ฝาก|ซื้อ|รายการ/i.test(`${candidate.subject || ''} ${candidate.detail || ''}`);
+        if (candidate.amount != null && candidate.type && candidate.bank && !statement && transactionEvidence) {
+          if (candidate.score >= 8) candidate.confidence = 'high';
+          else if (candidate.score >= 6) candidate.confidence = 'medium';
+          else candidate.confidence = 'low';
+          if (candidate.confidence === 'high') candidates.push(candidate);
+          else reviewCandidates.push(candidate);
+        }
       }
-      const candidate = toCandidate(full.data);
-      // After widening the Gmail search by one day, use the transaction date parsed
-      // from the email as the final month boundary so adjacent-month emails stay out.
-      if (from && to && candidate.date) {
-        const targetMonth = from.slice(0, 7);
-        const transactionMonth = String(candidate.date).slice(0, 7);
-        if (transactionMonth !== targetMonth) continue;
-      }
-      const statement = /monthly statement|account statement|trade statement|order history|ใบแจ้งยอด|สรุปรายการลงทุน/i.test(`${candidate.subject} ${candidate.detail}`);
-      const transactionEvidence = /successfully|processed successfully|transaction date|amount\s*:/i.test(candidate.detail || '') || /payment|transfer|transaction|เงินเข้า|เงินออก|โอน|ชำระ|จ่าย|ถอน|ฝาก|ซื้อ|รายการ/i.test(`${candidate.subject || ''} ${candidate.detail || ''}`);
-      if (candidate.amount != null && candidate.type && candidate.bank && !statement && transactionEvidence) {
-        candidate.confidence = 'high';
-        candidates.push(candidate);
-      }
+    };
+
+    // Keep concurrency low for one Gmail user. Large historical scans use one worker
+    // to avoid bursty traffic; small scans can use two workers safely.
+    const concurrency = Math.min(messages.length > 80 ? 1 : 2, messages.length || 1);
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    if (workerError) throw workerError;
+    if (quotaError) {
+      const retryAfter = Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000);
+      const body = { error: 'Gmail ใช้งานครบโควตาชั่วคราว ระบบหยุดยิงคำขอซ้ำให้แล้ว กรุณาลองใหม่ภายหลัง' };
+      setScanProgress(scanId, {
+        status: 'rate_limited', stage: 'พักการยิงคำขอ',
+        message: 'Gmail ใช้งานครบโควตาชั่วคราว ระบบหยุดคำขอซ้ำให้แล้ว',
+        percent: 100, retryAfter, current: processed, total: ids.size, scanId
+      });
+      clearScanProgressLater(scanId);
+      scanCooldown.set(cacheKey, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+      scanInFlight.delete(cacheKey);
+      if (scanResolve) scanResolve({ status: 429, body });
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json(body);
     }
 
-    candidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
     // Do not cap the combined result at 25: one busy bank (for example TTB)
     // can otherwise crowd out another bank such as SCB completely.
-    const result = { messages: candidates.slice(0, 100), scanned: ids.size };
+    candidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    reviewCandidates.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    const result = { messages: candidates.slice(0, 100), review: reviewCandidates.slice(0, 100), scanned: ids.size };
+    setScanProgress(scanId, {
+      status: 'done', stage: 'เสร็จสิ้น',
+      message: `วิเคราะห์เสร็จแล้ว พบรายการพร้อมนำเข้า ${result.messages.length} รายการ`,
+      percent: 100, current: ids.size, total: ids.size, scanId
+    });
+    clearScanProgressLater(scanId);
     scanCache.set(cacheKey, { at: Date.now(), data: result });
     scanInFlight.delete(cacheKey);
     if (scanResolve) scanResolve({ data: result });
@@ -453,24 +669,46 @@ router.get('/messages', async (req, res) => {
   } catch (error) {
     console.error(error);
     const message = error?.message || 'ไม่สามารถอ่านอีเมลจาก Gmail ได้';
+    const authExpired = error?.message === 'invalid_grant' || /invalid_grant/i.test(String(error?.response?.data?.error || ''));
     if (scanCacheKey) scanInFlight.delete(scanCacheKey);
-    if (scanResolve) scanResolve({ status: 500, body: { error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: message } });
+    if (scanResolve) {
+      scanResolve(authExpired
+        ? { status: 401, body: { error: 'การเชื่อมต่อ Gmail หมดอายุ กรุณาเชื่อมต่อ Gmail ใหม่' } }
+        : { status: 500, body: { error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: message } });
+    }
+    if (authExpired) {
+      setScanProgress(scanId, {
+        status: 'error', stage: 'ต้องเชื่อมต่อใหม่',
+        message: 'การเชื่อมต่อ Gmail หมดอายุ กรุณาเชื่อมต่อ Gmail ใหม่',
+        percent: 100, current: 0, total: 0, scanId
+      });
+      clearScanProgressLater(scanId);
+      return res.status(401).json({ error: 'การเชื่อมต่อ Gmail หมดอายุ กรุณาเชื่อมต่อ Gmail ใหม่' });
+    }
+    setScanProgress(scanId, {
+      status: 'error', stage: 'เกิดข้อผิดพลาด',
+      message: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้',
+      percent: 100, current: 0, total: 0, scanId
+    });
+    clearScanProgressLater(scanId);
     res.status(500).json({ error: 'ไม่สามารถอ่านอีเมลจาก Gmail ได้', detail: message });
   }
 });
 
 router.post('/import', async (req, res) => {
   const { candidate } = req.body || {};
-  if (!candidate?.id || !candidate.amount || !['expense', 'income'].includes(candidate.type)) {
+  const amount = Number(candidate?.amount);
+  if (!candidate?.id || !Number.isFinite(amount) || amount <= 0 || amount >= 100000000 || !['expense', 'income'].includes(candidate.type)) {
     return res.status(400).json({ error: 'ข้อมูลรายการไม่ครบหรือไม่ปลอดภัยที่จะนำเข้า' });
   }
+  candidate.amount = amount;
 
   try {
     const exists = db.prepare('SELECT id,kind,expense_id FROM imported_emails WHERE gmail_id=?').get(candidate.id);
     if (exists) {
       const validExpense = exists.kind === 'expense' && exists.expense_id && db.prepare('SELECT id FROM expenses WHERE id=?').get(exists.expense_id);
       const validIncome = exists.kind === 'income';
-      if (validExpense || validIncome) return res.json({ success: true, duplicate: true, message: '???????????????????????' });
+      if (validExpense || validIncome) return res.json({ success: true, duplicate: true, message: 'รายการจาก Gmail นี้ถูกนำเข้าแล้ว' });
       db.prepare('DELETE FROM imported_emails WHERE id=?').run(exists.id);
     }
 
@@ -491,9 +729,42 @@ router.post('/import', async (req, res) => {
     const category = db.prepare('SELECT id FROM categories WHERE name=?').get(candidate.category)
       || db.prepare("SELECT id FROM categories WHERE name='อื่นๆ'").get();
     const parsedDate = dateText(candidate.date || Date.now()) || dateText(Date.now());
+    const parsedTime = candidate.date && !Number.isNaN(new Date(candidate.date).getTime())
+      ? new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(candidate.date))
+      : null;
+
+    // Cross-source dedupe: a manually recorded expense can represent the same
+    // transaction that Gmail discovers later. Keep the user's existing manual
+    // row and link the Gmail message to it instead of creating another expense.
+    const crossSourceDuplicate = findCrossSourceDuplicate(candidate.amount, parsedDate, parsedTime, 'gmail');
+    if (crossSourceDuplicate) {
+      db.prepare('INSERT INTO imported_emails(gmail_id,kind,expense_id,source,fingerprint) VALUES(?,?,?,?,?)')
+        .run(candidate.id, 'expense', crossSourceDuplicate.id, 'gmail', fingerprint);
+      return res.json({
+        success: true,
+        type: 'expense',
+        id: Number(crossSourceDuplicate.id),
+        duplicate: true,
+        crossSourceLinked: true
+      });
+    }
+
+    // Repair/attach legacy Gmail expenses that were saved before imported_emails
+    // existed. Match on the complete transaction identity so a re-scan cannot
+    // create a second expense for the same legacy bank notification.
+    const legacyExpense = db.prepare(
+      'SELECT e.id FROM expenses e LEFT JOIN imported_emails ie ON ie.expense_id = e.id WHERE e.source = \'gmail\' AND e.amount = ? AND e.expense_date = ? AND COALESCE(e.expense_time, \'\') = COALESCE(?, \'\') AND COALESCE(e.merchant, \'\') = COALESCE(?, \'\') AND ie.id IS NULL ORDER BY e.id ASC LIMIT 1'
+    ).get(candidate.amount, parsedDate, parsedTime || null, candidate.merchant || null);
+
+    if (legacyExpense) {
+      db.prepare('INSERT INTO imported_emails(gmail_id,kind,expense_id,source,fingerprint) VALUES(?,?,?,?,?)')
+        .run(candidate.id, 'expense', legacyExpense.id, 'gmail', fingerprint);
+      return res.json({ success: true, type: 'expense', id: Number(legacyExpense.id), duplicate: true, legacyLinked: true });
+    }
+
     const info = db.prepare(
-      'INSERT INTO expenses(amount,category_id,merchant,note,expense_date,source) VALUES(?,?,?,?,?,?)'
-    ).run(candidate.amount, category.id, candidate.merchant || null, candidate.detail || null, parsedDate, 'gmail');
+      'INSERT INTO expenses(amount,category_id,merchant,note,expense_date,expense_time,source) VALUES(?,?,?,?,?,?,?)'
+    ).run(candidate.amount, category.id, candidate.merchant || null, candidate.detail || null, parsedDate, parsedTime, 'gmail');
     db.prepare('INSERT INTO imported_emails(gmail_id,kind,expense_id,source,fingerprint) VALUES(?,?,?,?,?)')
       .run(candidate.id, 'expense', info.lastInsertRowid, 'gmail', fingerprint);
     res.json({ success: true, type: 'expense', id: Number(info.lastInsertRowid) });
@@ -503,4 +774,5 @@ router.post('/import', async (req, res) => {
   }
 });
 
+router.startGmailPushWatch = gmailPush.startGmailPushWatch;
 module.exports = router;

@@ -37,14 +37,41 @@ body {
 }
 .topbar-inner {
   width: 100%; margin: 0 auto;
-  padding: 14px 18px;
+  padding: 10px 14px;
   display: flex; justify-content: space-between; align-items: center;
+  position: relative;
 }
 .topbar h1 { color: var(--cream); font-size: 17px; font-weight: 700; margin: 0; letter-spacing: .3px; }
-.icon-btn {
-  background: none; border: none; color: var(--brass);
-  font-size: 19px; cursor: pointer; padding: 4px;
+.latest-box-btn {
+  display:flex; align-items:center; gap:8px; max-width:min(330px, 58vw);
+  border:1px solid rgba(246,241,228,.16); border-radius:10px;
+  background:rgba(255,255,255,.06); color:var(--cream);
+  padding:7px 9px; cursor:pointer; text-align:left;
 }
+.latest-box-icon { color:var(--brass); font-size:15px; line-height:1; }
+.latest-box-copy { min-width:0; flex:1; }
+.latest-box-copy small { display:block; color:rgba(246,241,228,.62); font-size:9.5px; line-height:1.1; }
+.latest-box-copy strong { display:block; font-size:11.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+.latest-box-amount { flex:0 0 auto; font:700 11px 'IBM Plex Mono',monospace; color:var(--brass); }
+.latest-box-panel {
+  position:absolute; top:calc(100% + 8px); right:14px; width:min(360px, calc(100vw - 28px));
+  background:var(--cream-card); color:var(--charcoal); border:1px solid var(--hairline);
+  border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,.18); padding:10px; z-index:25;
+}
+.latest-box-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:3px 3px 8px; }
+.latest-box-head strong { color:var(--navy); font-size:14px; }
+.latest-box-close { border:0; background:transparent; color:var(--muted); font-size:20px; line-height:1; cursor:pointer; padding:2px 5px; }
+.latest-item { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; padding:10px 3px; border-top:1px dashed var(--hairline); }
+.latest-item-main { min-width:0; }
+.latest-item-title { display:block; font-size:12.5px; font-weight:600; color:var(--navy); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.latest-item-meta { display:block; margin-top:2px; font-size:10.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.latest-item-right { display:flex; align-items:center; gap:7px; }
+.latest-item-amount { font:700 11px 'IBM Plex Mono',monospace; color:var(--ink-red); white-space:nowrap; }
+.latest-item-actions { display:flex; gap:4px; }
+.latest-item-actions button { border:1px solid var(--hairline); background:#fff; border-radius:6px; padding:3px 6px; font:600 10px 'Sarabun',sans-serif; cursor:pointer; }
+.latest-item-actions .latest-edit { color:var(--navy); }
+.latest-item-actions .latest-delete { color:var(--ink-red); border-color:var(--ink-red-bg); }
+.latest-empty { padding:16px 8px; text-align:center; color:var(--muted); font-size:12px; }
 
 /* ---------- Layout ---------- */
 #app { width: 100%; margin: 0 auto; padding: 18px 16px 8px; }
@@ -88,6 +115,38 @@ body {
 .ticket-sub { margin: 10px 0 0; font-size: 12px; color: rgba(246,241,228,.7); }
 .ticket-sub b { color: var(--brass); font-family: 'IBM Plex Mono', monospace; }
 
+/* ---------- Dashboard summary ---------- */
+.dashboard-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.dashboard-stat {
+  background: var(--cream-card);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 10px 9px;
+  min-width: 0;
+}
+.dashboard-stat span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.dashboard-stat b {
+  display: block;
+  color: var(--navy);
+  font: 700 14px 'IBM Plex Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-stat:nth-child(2) b { color: var(--ink-red); }
+.dashboard-stat:nth-child(3) b,
+.dashboard-stat:nth-child(4) b { color: var(--ink-green); }
+
 /* ---------- Quick actions ---------- */
 .quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .qa-btn {
@@ -109,11 +168,6 @@ body {
 }
 .card-head { margin-bottom: 12px; }
 .card-title { margin: 0; font-weight: 600; font-size: 14.5px; color: var(--navy); }
-
-.tct-card .ticket-row { color: var(--charcoal); }
-.tct-card .tct-remain b { color: var(--ink-green); }
-.tct-fill { background: var(--ink-green) !important; }
-.tct-card .ticket-bar { background: var(--ink-green-bg); }
 
 /* ---------- Category bars ---------- */
 .category-bars { display: flex; flex-direction: column; gap: 10px; }
@@ -181,13 +235,18 @@ body {
   width: 100%;
 }
 .nav-btn {
-  flex: 1; background: none; border: none; padding: 10px 0 8px;
+  flex: 1; min-width: 0; background: none; border: none; padding: 10px 0 8px;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-family: 'Sarabun', sans-serif; font-size: 11px; color: var(--muted);
   cursor: pointer;
 }
+.nav-btn > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; padding: 0 2px; }
 .nav-btn.active { color: var(--navy); font-weight: 600; }
-.nav-icon { font-size: 18px; }
+.nav-icon { font-size: 18px; line-height: 1.1; }
+@media (max-width: 380px) {
+  .nav-btn { font-size: 10px; }
+  .nav-icon { font-size: 17px; }
+}
 
 /* ---------- Segmented control ---------- */
 .segmented { display: flex; background: var(--hairline); border-radius: 10px; padding: 3px; margin-bottom: 14px; }
@@ -213,16 +272,6 @@ body {
   background: #fff; color: var(--charcoal);
 }
 .field-input:focus { outline: none; border-color: var(--navy); }
-.field-file { width: 100%; font-size: 13px; margin-top: 4px; }
-.divider { border: none; border-top: 1px dashed var(--hairline); margin: 16px 0; }
-
-.ai-row { display: flex; gap: 8px; margin-top: 4px; }
-.ai-row .field-input { flex: 1; }
-.btn-ai {
-  background: var(--navy); color: var(--brass); border: none; border-radius: 8px;
-  padding: 0 16px; font-weight: 700; font-size: 13px; cursor: pointer;
-}
-
 .quick-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
 .tag-btn {
   border: 1px solid var(--hairline); background: #fff; border-radius: 20px;
@@ -248,12 +297,17 @@ body {
 /* ---------- Modal ---------- */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(20,29,51,.55);
-  display: flex; align-items: flex-end; z-index: 30;
+  display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 30;
 }
 .modal-sheet {
-  background: var(--cream-card); width: 100%; margin: 0 auto;
-  border-radius: 16px 16px 0 0; padding: 18px 18px 26px;
-  max-height: 88vh; overflow-y: auto;
+  background: var(--cream-card); width: min(520px, 100%); margin: 0 auto;
+  border: 1px solid rgba(222,212,184,.9); border-radius: 16px; padding: 18px;
+  max-height: min(86vh, 760px); overflow-y: auto;
+  box-shadow: 0 18px 48px rgba(20,29,51,.22);
+}
+@media (max-width:520px) {
+  .modal-overlay { padding: 10px; }
+  .modal-sheet { max-height: 90vh; border-radius: 14px; padding: 16px; }
 }
 .modal-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .modal-tab {
@@ -324,6 +378,98 @@ body {
 }
 
 
+/* ---------- Gmail scan progress ---------- */
+.gmail-scan-progress {
+  margin: 10px 0 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  background: var(--cream-card);
+}
+.gmail-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.gmail-progress-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid var(--hairline);
+  border-top-color: var(--navy);
+  border-radius: 50%;
+  animation: gmailSpin .8s linear infinite;
+}
+.gmail-progress-copy {
+  min-width: 0;
+  flex: 1;
+}
+.gmail-progress-copy strong {
+  display: block;
+  color: var(--navy);
+  font-size: 12.5px;
+}
+.gmail-progress-copy span {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gmail-progress-percent {
+  color: var(--navy);
+  font: 700 12px 'IBM Plex Mono', monospace;
+}
+.gmail-progress-track {
+  height: 7px;
+  margin-top: 9px;
+  background: var(--hairline);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.gmail-progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--navy);
+  border-radius: 5px;
+  transition: width .35s ease;
+}
+.gmail-progress-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.gmail-scan-progress.rate-limited {
+  border-color: var(--ink-red);
+  background: var(--ink-red-bg);
+}
+.gmail-scan-progress.rate-limited .gmail-progress-spinner {
+  border-color: rgba(178,58,46,.22);
+  border-top-color: var(--ink-red);
+}
+.gmail-scan-progress.rate-limited .gmail-progress-copy strong,
+.gmail-scan-progress.rate-limited .gmail-progress-percent {
+  color: var(--ink-red);
+}
+.gmail-load-btn:disabled,
+.gmail-fetch-btn:disabled {
+  opacity: .65;
+  cursor: wait;
+}
+.gmail-fetch-btn.is-scanning {
+  position: relative;
+}
+.gmail-scan-progress.rate-limited { box-shadow: none; }
+
+@keyframes gmailSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* ---------- Gmail import UI ---------- */
 .gmail-page-head {
   display:flex; justify-content:space-between; align-items:center; gap:16px;
@@ -368,6 +514,8 @@ body {
 .gmail-chip b { color:#111827; font-weight:600; }
 
 @media (max-width:560px) {
+  .dashboard-summary { grid-template-columns: 1fr 1fr; }
+  .dashboard-stat b { font-size: 13px; }
   .gmail-page-head h2 { font-size:19px; }
   .gmail-connect-row { align-items:flex-start; flex-direction:column; }
   .gmail-connect-actions { width:100%; }

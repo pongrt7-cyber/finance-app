@@ -24,7 +24,6 @@ app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/goals', require('./routes/goals'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/data', require('./routes/data'));
-app.use('/api/admin', require('./routes/admin'));
 const gmailRoute = require('./routes/gmail');
 app.use('/api/gmail', gmailRoute);
 app.use('/api/gmail-audit', require('./routes/gmail-audit'));
@@ -59,6 +58,10 @@ async function autoImportGmail() {
 }
 
 function scheduleDailyGmailImport() {
+  if (process.env.GMAIL_PUBSUB_TOPIC) {
+    console.log('Gmail push configured; daily Gmail polling is disabled.');
+    return;
+  }
   const now = new Date();
   const next = new Date(now);
   next.setHours(23, 0, 0, 0);
@@ -76,12 +79,21 @@ function scheduleDailyGmailImport() {
 // Manual scans from the Gmail page remain available.
 scheduleDailyGmailImport();
 
-if (process.env.LINE_CHANNEL_SECRET && process.env.LINE_CHANNEL_ACCESS_TOKEN) {
-  app.use('/api/line', require('./routes/line'));
-  console.log('LINE Bot webhook enabled at /api/line/webhook');
-} else {
-  console.log('LINE Bot webhook disabled (set LINE_CHANNEL_SECRET + LINE_CHANNEL_ACCESS_TOKEN in .env to enable)');
+async function renewGmailPushWatch() {
+  if (!process.env.GMAIL_PUBSUB_TOPIC) return;
+  try {
+    const result = await gmailRoute.startGmailPushWatch();
+    console.log('Gmail push watch:', result);
+  } catch (error) {
+    console.error('Gmail push watch renewal:', error.message);
+  }
 }
+
+// Renew Gmail watch once per day; Google requires renewal at least every 7 days.
+setTimeout(() => {
+  renewGmailPushWatch();
+  setInterval(renewGmailPushWatch, 24 * 60 * 60 * 1000);
+}, 5000);
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));

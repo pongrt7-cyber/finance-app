@@ -4,7 +4,7 @@ const router = express.Router();
 
 // GET settings
 router.get('/', (req, res) => {
-  const settings = db.prepare('SELECT * FROM settings').all();
+  const settings = db.prepare("SELECT * FROM settings WHERE key != 'tct_limit'").all();
   const result = {};
   settings.forEach(s => result[s.key] = s.value);
   res.json(result);
@@ -12,11 +12,8 @@ router.get('/', (req, res) => {
 
 // POST update settings
 router.post('/', (req, res) => {
-  const { tct_limit, admin_pass } = req.body;
-  
-  if (tct_limit !== undefined) {
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('tct_limit', tct_limit);
-  }
+  const { admin_pass } = req.body;
+
   if (admin_pass !== undefined && admin_pass !== '') {
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('admin_pass', admin_pass);
   }

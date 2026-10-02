@@ -1,8 +1,8 @@
 let categories = [];
 let trendChart = null;
 let currentTxnTab = 'expense';
-let currentStatsRange = 'today';
-let currentPayment = 'เงินสด';
+let currentStatsRange = 'month';
+let currentPayment = 'โอน';
 let editingExpenseId = null;
 let editingExpenseDate = null;
 let editingExpenseTime = null;
@@ -24,22 +24,29 @@ function todayStr() {
 
 /* ---------------- Navigation ---------------- */
 function switchView(view) {
+  if (view === 'gmail' && typeof window.openGmail === 'function') { window.openGmail(); return; }
+  if (view === 'monthly' && typeof window.openMonthly === 'function') { window.openMonthly(); return; }
+  if (view === 'gmail-audit' && typeof window.openGmailAudit === 'function') { window.openGmailAudit(); return; }
+  const target = document.getElementById(`view-${view}`);
+  if (!target) return;
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-  document.getElementById(`view-${view}`).classList.remove('hidden');
+  target.classList.remove('hidden');
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-
   if (view === 'dashboard') loadDashboard();
   if (view === 'stats') loadStats(currentStatsRange);
   if (view === 'settings') loadSettings();
 }
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.view === 'gmail-audit') return;
-    switchView(btn.dataset.view);
-  });
+  btn.addEventListener('click', () => switchView(btn.dataset.view));
 });
-document.getElementById('btnHeaderSettings').addEventListener('click', () => switchView('settings'));
+const latestBoxBtn = document.getElementById('latestBoxBtn');
+const latestBoxPanel = document.getElementById('latestBoxPanel');
+const latestBoxClose = document.getElementById('latestBoxClose');
+latestBoxBtn?.addEventListener('click', event => { event.stopPropagation(); if (latestBoxPanel?.classList.contains('hidden')) { latestBoxPanel.classList.remove('hidden'); latestBoxBtn.setAttribute('aria-expanded', 'true'); } else closeLatestBox(); });
+latestBoxClose?.addEventListener('click', closeLatestBox);
+latestBoxPanel?.addEventListener('click', event => event.stopPropagation());
+document.addEventListener('click', event => { if (!event.target.closest('#latestBoxPanel') && !event.target.closest('#latestBoxBtn')) closeLatestBox(); });
 
 /* ---------------- Dashboard ---------------- */
 async function loadDashboard() {
@@ -47,13 +54,16 @@ async function loadDashboard() {
     const d = await API.get('/stats/dashboard');
     document.getElementById('dashRemaining').textContent = fmt(d.remaining);
     document.getElementById('dashSalary').textContent = fmt(d.salary);
+    document.getElementById('dashIncome').textContent = fmt(d.salary);
+    document.getElementById('dashExpense').textContent = fmt(d.totalExpense);
+    document.getElementById('dashRemainStat').textContent = fmt(d.remaining);
+    document.getElementById('dashSavingsPct').textContent = d.salary > 0 ? (Math.max(0, d.remaining) / d.salary * 100).toFixed(0) + '%' : '0%';
     document.getElementById('dashUsedPct').textContent = `ใช้ไป ${d.usedPct}%`;
     document.getElementById('dashUsedBar').style.width = Math.min(Math.max(d.usedPct, 0), 100) + '%';
     document.getElementById('dashDailyBudget').textContent = fmt(d.dailyBudget);
 
     renderCategoryBars(d.byCategory);
-    renderRecentList(d.recent);
-    loadTctWidget();
+    renderLatestBox(d.recent || []);
     loadBudgetWidget();
   } catch (e) {
     showToast(e.message, 'error');
@@ -82,87 +92,26 @@ function renderCategoryBars(data) {
   `).join('');
 }
 
-function renderRecentList(items) {
-  const ul = document.getElementById('recentList');
-  if (!items.length) {
-    ul.innerHTML = '<li class="plain empty-note">ยังไม่มีรายการ</li>';
-    return;
-  }
-  ul.innerHTML = items.map(e => `
-    <li class="ledger-item">
-      <div class="swipe-actions">
-        <button class="swipe-btn edit" onclick="openEditExpense(${e.id})">แก้ไข</button>
-        <button class="swipe-btn delete" onclick="deleteExpense(${e.id})">ลบ</button>
-      </div>
-      <div class="swipe-content" data-id="${e.id}">
-        <div class="ledger-main">
-          <p class="ledger-title">${e.merchant || e.category_name || 'ไม่ระบุ'}</p>
-          <p class="ledger-sub">${e.category_name} · ${e.expense_date}</p>
-        </div>
-        <span class="ledger-amt neg mono">-${fmt(e.amount)}</span>
-      </div>
-    </li>
-  `).join('');
-  attachSwipeHandlers(ul);
+function renderLatestBox(items) {
+  const titleEl=document.getElementById('latestBoxTitle');
+  const amountEl=document.getElementById('latestBoxAmount');
+  const listEl=document.getElementById('latestBoxList');
+  if(!titleEl||!amountEl||!listEl)return;
+  const latest=items[0];
+  titleEl.textContent=latest?(latest.merchant||latest.category_name||'ไม่ระบุ'):'ยังไม่มีรายการ';
+  amountEl.textContent=latest?'-'+fmt(latest.amount):'—';
+  if(!items.length){listEl.innerHTML='<div class="latest-empty">ยังไม่มีรายการรายจ่าย</div>';return;}
+  listEl.innerHTML=items.slice(0,8).map(e =>
+    '<div class="latest-item"><div class="latest-item-main">' +
+    '<span class="latest-item-title">'+escHtml(e.merchant||e.category_name||'ไม่ระบุ')+'</span>' +
+    '<span class="latest-item-meta">'+escHtml(e.category_name||'ไม่ระบุ')+' · '+escHtml(e.expense_date||'')+(e.expense_time?' · '+escHtml(e.expense_time):'')+'</span></div>' +
+    '<div class="latest-item-right"><span class="latest-item-amount">-'+fmt(e.amount)+'</span>' +
+    '<span class="latest-item-actions"><button type="button" class="latest-edit" onclick="openEditExpense('+e.id+'); closeLatestBox();">แก้ไข</button>' +
+    '<button type="button" class="latest-delete" onclick="deleteExpense('+e.id+')">ลบ</button></span></div></div>'
+  ).join('');
 }
-
-/* ---------------- Swipe to reveal edit/delete ---------------- */
-function attachSwipeHandlers(container) {
-  container.querySelectorAll('.swipe-content').forEach(el => {
-    let startX = 0, currentX = 0, dragging = false;
-    const OPEN = -140;
-
-    const onStart = (x) => { startX = x; dragging = true; el.style.transition = 'none'; };
-    const onMove = (x) => {
-      if (!dragging) return;
-      const delta = x - startX;
-      const base = el.dataset.open === '1' ? OPEN : 0;
-      currentX = Math.min(0, Math.max(OPEN, base + delta));
-      el.style.transform = `translateX(${currentX}px)`;
-    };
-    const onEnd = () => {
-      if (!dragging) return;
-      dragging = false;
-      el.style.transition = 'transform .2s ease';
-      const shouldOpen = currentX < OPEN / 2;
-      el.style.transform = `translateX(${shouldOpen ? OPEN : 0}px)`;
-      el.dataset.open = shouldOpen ? '1' : '0';
-      // ปิดแถวอื่นที่เปิดค้างไว้
-      if (shouldOpen) {
-        container.querySelectorAll('.swipe-content').forEach(other => {
-          if (other !== el && other.dataset.open === '1') {
-            other.style.transform = 'translateX(0px)';
-            other.dataset.open = '0';
-          }
-        });
-      }
-    };
-
-    el.addEventListener('touchstart', (e) => onStart(e.touches[0].clientX), { passive: true });
-    el.addEventListener('touchmove', (e) => onMove(e.touches[0].clientX), { passive: true });
-    el.addEventListener('touchend', onEnd);
-  });
-}
-
-async function loadTctWidget() {
-  try {
-    const settings = await API.get('/settings');
-    const limit = parseFloat(settings.tct_limit || 0);
-    const widget = document.getElementById('tctWidget');
-    if (!limit || limit <= 0) { widget.classList.add('hidden'); return; }
-    widget.classList.remove('hidden');
-
-    const rows = await API.get(`/expenses?from=${firstOfMonth()}&to=${todayStr()}&payment_method=${encodeURIComponent('ไทยช่วยไทย')}`);
-    const used = rows.reduce((s, r) => s + r.amount, 0);
-    const remain = Math.max(limit - used, 0);
-
-    document.getElementById('tctUsed').textContent = `ใช้ไป ${fmt(used)}`;
-    document.getElementById('tctRemain').textContent = fmt(remain);
-    document.getElementById('tctBar').style.width = Math.min((used / limit) * 100, 100) + '%';
-  } catch {
-    document.getElementById('tctWidget').classList.add('hidden');
-  }
-}
+function escHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function closeLatestBox(){document.getElementById('latestBoxPanel')?.classList.add('hidden');document.getElementById('latestBoxBtn')?.setAttribute('aria-expanded','false');}
 
 async function loadBudgetWidget() {
   try {
@@ -208,7 +157,7 @@ async function openEditExpense(id) {
     const editCategory = categories.find(c => c.name === row.category_name);
     if (editCategory) selectQuickTag(editCategory.id);
     document.getElementById('expMerchant').value = row.merchant || '';
-    selectPayment(row.payment_method || 'เงินสด');
+    selectPayment(row.payment_method === 'โอน' ? 'โอน' : 'เงินสด');
     document.querySelector('#formExpense .btn-primary').textContent = 'บันทึกการแก้ไข';
   } catch (e) { showToast(e.message, 'error'); }
 }
@@ -288,13 +237,12 @@ function switchTxnTab(tab) {
   document.getElementById('formIncome').classList.toggle('hidden', tab !== 'income');
 
   if (tab === 'expense') {
-    document.getElementById('aiTextInput').value = '';
     document.getElementById('expAmount').value = '';
     document.getElementById('expMerchant').value = '';
     document.getElementById('expCategory').value = '';
     document.querySelectorAll('#quickCategoryTags .tag-btn').forEach(b => b.classList.remove('active'));
     if (!editingExpenseId) {
-      selectPayment('เงินสด');
+      selectPayment('โอน');
       document.querySelector('#formExpense .btn-primary').textContent = 'บันทึกรายจ่าย';
     }
   } else {
@@ -343,59 +291,26 @@ async function saveExpense() {
       await API.put(`/expenses/${editingExpenseId}`, {
         amount, category_id, merchant: merchant || null,
         payment_method,
-        is_state_welfare: payment_method === 'ไทยช่วยไทย' ? 1 : 0,
         expense_date: editingExpenseDate || localDateStr(now),
         expense_time: editingExpenseTime || now.toTimeString().slice(0, 5)
       });
       showToast('แก้ไขรายการแล้ว', 'success');
     } else {
-      await API.post('/expenses', {
+      const result = await API.post('/expenses', {
         amount, category_id, merchant: merchant || null,
         payment_method,
-        is_state_welfare: payment_method === 'ไทยช่วยไทย' ? 1 : 0,
         expense_date: localDateStr(now),
         expense_time: now.toTimeString().slice(0, 5),
         source: 'manual'
       });
-      showToast('บันทึกรายจ่ายแล้ว', 'success');
+      showToast(
+        result?.duplicate ? 'พบรายการเดิมแล้ว ไม่ได้สร้างรายการซ้ำ' : 'บันทึกรายจ่ายแล้ว',
+        result?.duplicate ? 'error' : 'success'
+      );
     }
     closeModal('modalTxn');
     loadDashboard();
   } catch (e) { showToast(e.message, 'error'); }
-}
-
-/* ---------------- AI parse ---------------- */
-async function parseAiText() {
-  const text = document.getElementById('aiTextInput').value.trim();
-  if (!text) return;
-  try {
-    const parsed = await API.post('/ai/parse-text', { text });
-    applyParsedExpense(parsed);
-  } catch (e) { showToast(e.message, 'error'); }
-}
-
-document.getElementById('aiImageInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('image', file);
-  showToast('กำลังอ่านสลิป...', 'info');
-  try {
-    const parsed = await API.post('/ai/parse-image', fd, true);
-    applyParsedExpense(parsed);
-  } catch (err) { showToast(err.message, 'error'); }
-});
-
-function applyParsedExpense(parsed) {
-  if (parsed.amount) document.getElementById('expAmount').value = parsed.amount;
-  if (parsed.merchant) document.getElementById('expMerchant').value = parsed.merchant;
-  if (parsed.category) {
-    const match = categories.find(c => c.name === parsed.category);
-    if (match) {
-      document.getElementById('expCategory').value = match.name;
-      selectCategory(match);
-    }
-  }
 }
 
 /* ---------------- Save income ---------------- */
@@ -498,10 +413,6 @@ function renderTrendChart(income, expense) {
 
 /* ---------------- Settings ---------------- */
 async function loadSettings() {
-  try {
-    const s = await API.get('/settings');
-    document.getElementById('setTctLimit').value = s.tct_limit || '';
-  } catch { /* ignore if empty */ }
   document.getElementById('setAdminPass').value = '';
 }
 
@@ -515,21 +426,7 @@ async function saveAdminPassword() {
   } catch (e) { showToast(e.message, 'error'); }
 }
 
-async function saveTctLimit() {
-  const limit = document.getElementById('setTctLimit').value;
-  try {
-    await API.post('/settings', { tct_limit: limit });
-    showToast('บันทึกวงเงินแล้ว', 'success');
-  } catch (e) { showToast(e.message, 'error'); }
-}
-
 /* ---------------- Init ---------------- */
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  });
-}
-
 (async function init() {
   await loadCategories();
   initCategoryPicker();

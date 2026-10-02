@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { findCrossSourceDuplicate } = require('../utils/duplicate');
 const router = express.Router();
 
 function normalizeRuleText(value) {
@@ -67,20 +68,34 @@ router.post('/', (req, res) => {
     expense_date, expense_time, source
   } = req.body;
 
-  if (!amount || amount <= 0) return res.status(400).json({ error: 'จำนวนเงินไม่ถูกต้อง' });
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0 || numericAmount >= 100000000) return res.status(400).json({ error: 'จำนวนเงินไม่ถูกต้อง' });
   if (!category_id) return res.status(400).json({ error: 'ต้องระบุหมวดหมู่' });
-  if (!expense_date) return res.status(400).json({ error: 'ต้องระบุวันที่' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(expense_date || ''))) return res.status(400).json({ error: 'วันที่ไม่ถูกต้อง' });
+
+  const requestedSource = source || 'manual';
+  if (requestedSource === 'manual' && !String(merchant || '').trim() && !String(note || '').trim()) {
+    const duplicate = findCrossSourceDuplicate(numericAmount, expense_date, expense_time, requestedSource);
+    if (duplicate) {
+      return res.json({
+        id: Number(duplicate.id),
+        duplicate: true,
+        message: 'พบรายการจาก Gmail ที่อาจเป็นธุรกรรมเดียวกัน จึงไม่สร้างรายการซ้ำ'
+      });
+    }
+  }
 
   const info = db.prepare(`
     INSERT INTO expenses
       (amount, category_id, merchant, note, payment_method, is_state_welfare, expense_date, expense_time, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    amount, category_id, merchant || null, note || null,
+    numericAmount, category_id, merchant || null, note || null,
     payment_method || 'เงินสด', is_state_welfare ? 1 : 0,
     expense_date, expense_time || null, source || 'manual'
   );
 
+  rememberCategory({ merchant: merchant || null }, category_id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 
@@ -111,8 +126,24 @@ router.put('/:id', (req, res) => {
 
 // DELETE
 router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'รหัสรายการไม่ถูกต้อง' });
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare("DELETE FROM imported_emails WHERE kind='expense' AND expense_id=?").run(id);
+    const result = db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
+    if (result.changes === 0) {
+      db.exec('ROLLBACK');
+      return res.status(404).json({ error: 'ไม่พบรายการรายจ่าย' });
+    }
+    db.exec('COMMIT');
+    res.json({ success: true });
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    console.error('Delete expense failed:', error);
+    res.status(500).json({ error: 'ลบรายการไม่สำเร็จ', detail: error.message });
+  }
 });
 
 module.exports = router;

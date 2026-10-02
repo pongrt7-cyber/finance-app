@@ -1,20 +1,7 @@
-﻿const express = require('express');
-const multer = require('multer');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const express = require('express');
 const db = require('../db');
-const { runTesseractOcr } = require('../ocr/ocrEngine');
-const { extractFields } = require('../ocr/extractFields');
 const { currentMonth } = require('../utils/date');
 const router = express.Router();
-
-const upload = multer({ storage: multer.diskStorage({
-  destination: os.tmpdir(),
-  filename: (req, file, cb) => cb(null, `slip_${Date.now()}${path.extname(file.originalname) || '.jpg'}`)
-}), limits: { fileSize: 8 * 1024 * 1024 } });
-
-const CATEGORY_HINT = () => db.prepare('SELECT name FROM categories').all().map(c => c.name).join(', ');
 
 async function callOllama(messages) {
   const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
@@ -42,44 +29,6 @@ async function callClaude(messages) {
   const data = await resp.json();
   return data.content.map(b => b.text || '').join('').replace(/```json|```/g, '').trim();
 }
-
-router.post('/parse-image', upload.single('image'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'à¹„à¸¡à¹ˆà¸žà¸šà¹„à¸Ÿà¸¥à¹Œà¸£à¸¹à¸›à¸ à¸²à¸ž' });
-  const filePath = req.file.path;
-  try {
-    const lines = await runTesseractOcr(filePath);
-    const parsed = extractFields(lines);
-    if (parsed.category) {
-      const exists = db.prepare('SELECT 1 FROM categories WHERE name = ?').get(parsed.category);
-      if (!exists) parsed.category = null;
-    }
-    res.json(parsed);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'à¸­à¹ˆà¸²à¸™à¸ªà¸¥à¸´à¸›à¹„à¸¡à¹ˆà¸ªà¸³à¹€à¸£à¹‡à¸ˆ à¸à¸£à¸¸à¸“à¸²à¸à¸£à¸­à¸à¹€à¸­à¸‡' });
-  } finally {
-    fs.unlink(filePath, () => {});
-  }
-});
-
-router.post('/parse-text', async (req, res) => {
-  const { text: input } = req.body;
-  if (!input) return res.status(400).json({ error: 'à¸•à¹‰à¸­à¸‡à¸£à¸°à¸šà¸¸à¸‚à¹‰à¸­à¸„à¸§à¸²à¸¡' });
-  try {
-    const prompt = `à¹à¸›à¸¥à¸‡à¸‚à¹‰à¸­à¸„à¸§à¸²à¸¡à¸£à¸²à¸¢à¸ˆà¹ˆà¸²à¸¢à¸™à¸µà¹‰à¹€à¸›à¹‡à¸™ JSON à¹€à¸—à¹ˆà¸²à¸™à¸±à¹‰à¸™ (à¸«à¹‰à¸²à¸¡à¸¡à¸µà¸‚à¹‰à¸­à¸„à¸§à¸²à¸¡à¸­à¸·à¹ˆà¸™): "${input}"
-à¸£à¸¹à¸›à¹à¸šà¸š: {"merchant": "à¸Šà¸·à¹ˆà¸­à¸£à¹‰à¸²à¸™ à¸«à¸£à¸·à¸­ null", "amount": à¸•à¸±à¸§à¹€à¸¥à¸‚, "category": "à¹€à¸¥à¸·à¸­à¸à¸ˆà¸²à¸à¸£à¸²à¸¢à¸à¸²à¸£à¸™à¸µà¹‰à¹€à¸—à¹ˆà¸²à¸™à¸±à¹‰à¸™: ${CATEGORY_HINT()}"}
-à¹ƒà¸Šà¹‰à¸§à¸±à¸™à¸—à¸µà¹ˆà¹à¸¥à¸°à¹€à¸§à¸¥à¸²à¸›à¸±à¸ˆà¸ˆà¸¸à¸šà¸±à¸™à¹€à¸ªà¸¡à¸­ à¸–à¹‰à¸²à¹„à¸¡à¹ˆà¸£à¸°à¸šà¸¸à¸ˆà¸³à¸™à¸§à¸™à¹€à¸‡à¸´à¸™à¹ƒà¸«à¹‰ amount à¹€à¸›à¹‡à¸™ null`;
-    const text = await callClaude([{ role: 'user', content: prompt }]);
-    const parsed = JSON.parse(text);
-    const now = new Date();
-    parsed.date = now.toISOString().slice(0, 10);
-    parsed.time = now.toTimeString().slice(0, 5);
-    res.json(parsed);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'à¹à¸›à¸¥à¸‚à¹‰à¸­à¸„à¸§à¸²à¸¡à¹„à¸¡à¹ˆà¸ªà¸³à¹€à¸£à¹‡à¸ˆ à¸à¸£à¸¸à¸“à¸²à¸à¸£à¸­à¸à¹€à¸­à¸‡' });
-  }
-});
 
 router.get('/analysis', async (req, res) => {
   const month = String(req.query.month || currentMonth());

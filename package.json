@@ -1,7 +1,7 @@
 {
   "name": "finance-app",
   "version": "1.0.0",
-  "description": "Personal finance tracker - single user, Thai UI, AI-assisted expense entry",
+  "description": "Personal finance tracker - single user, Thai UI, Gmail import, monthly AI financial analysis",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
@@ -12,14 +12,11 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@line/bot-sdk": "^11.2.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "googleapis": "^144.0.0",
-    "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "tesseract.js": "^7.0.0"
+    "jsonwebtoken": "^9.0.2"
   }
 }

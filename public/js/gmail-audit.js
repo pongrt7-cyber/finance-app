@@ -4,10 +4,10 @@
   const currentMonth = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
   const nextMonth = m => { const [y,mo]=m.split('-').map(Number); const d=new Date(y,mo,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
   window.openGmailAudit = async function() {
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'gmail-audit'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'gmail'));
     let view = document.getElementById('gmailAuditView');
     if (!view) {
-      document.body.insertAdjacentHTML('beforeend', `<section id="gmailAuditView" class="view hidden" style="position:fixed;inset:0;z-index:46;background:var(--cream);overflow:auto;padding:20px 16px 110px"><div style="max-width:900px;margin:auto">
+      document.getElementById('app').insertAdjacentHTML('beforeend', `<section id="gmailAuditView" class="view hidden"><div style="max-width:900px;margin:auto">
       <div class="gmail-page-head"><div><h2>Gmail Audit Center</h2><p>ตรวจสอบ Gmail ↔ Finance และค้นหารายการที่ตกหล่น</p></div><button class="btn-secondary" onclick="closeGmailAudit()">ปิด</button></div>
       <div class="card"><div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap"><div style="flex:1;min-width:150px"><label class="field-label">เดือนที่ตรวจสอบ</label><input id="auditMonth" type="month" class="field-input"></div><button class="btn-primary" onclick="runGmailAudit()">ตรวจสอบ</button><button class="btn-secondary" onclick="scanGmailAudit()">สแกน Gmail ใหม่</button></div></div>
       <div id="auditSummary"></div><div id="auditReconcile"></div><div id="auditIntegrity" class="card"></div>
@@ -21,7 +21,9 @@
     document.getElementById('auditMonth').value = currentMonth();
     await runGmailAudit();
   };
-  window.closeGmailAudit = function() { document.getElementById('gmailAuditView')?.classList.add('hidden'); document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'dashboard')); document.getElementById('view-dashboard')?.classList.remove('hidden'); };
+  window.closeGmailAudit = function() {
+    if (typeof window.openGmail === 'function') window.openGmail();
+  };
   window.runGmailAudit = async function() {
     const month=document.getElementById('auditMonth')?.value || currentMonth();
     const [s,r,i] = await Promise.all([fetch(`/api/gmail-audit/summary?month=${month}`).then(x=>x.json()),fetch(`/api/gmail-audit/reconciliation?month=${month}`).then(x=>x.json()),fetch('/api/gmail-audit/integrity').then(x=>x.json())]);
@@ -41,7 +43,8 @@
     try {
       const r=await fetch(`/api/gmail/messages?from=${month}-01&to=${to}&limit=100`); const data=await r.json();
       if(!r.ok) throw new Error(data.error||'สแกน Gmail ไม่สำเร็จ');
-      box.innerHTML=(data.messages||[]).map((x,n)=>`<div style="padding:10px 0;border-bottom:1px dashed var(--hairline)"><div style="display:flex;justify-content:space-between;gap:8px"><span><b>${esc(x.merchant||x.subject||'รายการ Gmail')}</b><small style="display:block;color:var(--muted)">${esc(x.date||'')} · ${esc(x.bank||'')} · ${esc(x.confidence||'')}</small></span><span><b class="mono">฿${money(x.amount)}</b><button class="btn-primary" style="margin-left:8px;padding:4px 8px" onclick='importGmailCandidate(${JSON.stringify(x).replace(/'/g,"&#39;")})'>นำเข้า</button></span></div><small style="color:var(--muted)">${esc(x.subject||'')}</small></div>`).join('')||'<p class="empty-note">ไม่พบ Gmail ที่พร้อมนำเข้า (รายการที่ Import แล้วจะไม่แสดง)</p>';
+      const candidates = [...(data.messages || []), ...(data.review || [])];
+      box.innerHTML=candidates.map((x,n)=>`<div style="padding:10px 0;border-bottom:1px dashed var(--hairline)"><div style="display:flex;justify-content:space-between;gap:8px"><span><b>${esc(x.merchant||x.subject||'รายการ Gmail')}</b><small style="display:block;color:var(--muted)">${esc(x.date||'')} · ${esc(x.bank||'')} · ${esc(x.confidence||'')}</small></span><span><b class="mono">฿${money(x.amount)}</b><button class="btn-primary" style="margin-left:8px;padding:4px 8px" onclick='importGmailCandidate(${JSON.stringify(x).replace(/'/g,"&#39;")})'>นำเข้า</button></span></div><small style="color:var(--muted)">${esc(x.subject||'')}</small></div>`).join('')||'<p class="empty-note">ไม่พบ Gmail ที่พร้อมนำเข้า (รายการที่ Import แล้วจะไม่แสดง)</p>';
     } catch(e) { box.innerHTML=`<p style="color:var(--ink-red)">${esc(e.message)}</p>`; }
   };
   window.importGmailCandidate = async function(candidate) {

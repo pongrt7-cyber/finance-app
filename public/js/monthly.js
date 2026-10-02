@@ -55,10 +55,6 @@
 
   function buildUI() {
     injectStyles();
-    const nav = document.querySelector('.bottomnav');
-    if (nav && !nav.querySelector('[data-view="monthly"]')) {
-      nav.insertAdjacentHTML('beforeend', `<button class="nav-btn" data-view="monthly"><span class="nav-icon">◫</span><span>รายเดือน</span></button>`);
-    }
     if (!document.getElementById('view-monthly')) {
       document.getElementById('app').insertAdjacentHTML('beforeend', `
         <section id="view-monthly" class="view hidden">
@@ -160,9 +156,6 @@
           </div>
         </section>`);
     }
-    nav?.querySelector('[data-view="monthly"]')?.addEventListener('click', () => {
-      switchToMonthly();
-    });
     document.getElementById('monthlyPrev')?.addEventListener('click', () => {
       selectedMonth = shiftMonth(selectedMonth, -1); renderMonthly();
     });
@@ -199,6 +192,8 @@
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'monthly'));
     renderMonthly();
   }
+
+  window.openMonthly = switchToMonthly;
 
   async function renderMonthly() {
     populateMonthSelect();
@@ -450,12 +445,13 @@
       const res = await fetch(`/api/gmail/messages?from=${from}&to=${to}&limit=100`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Gmail scan failed');
-      let saved=0, duplicate=0, review=0;
+      let saved=0, duplicate=0, review=Array.isArray(data.review) ? data.review.length : 0;
       for (const candidate of data.messages || []) {
         if (candidate.confidence !== 'high') { review++; continue; }
         const r = await fetch('/api/gmail/import', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({candidate}) });
-        if (r.ok) saved++;
-        else if (r.status === 409) duplicate++;
+        const payload = await r.json().catch(() => ({}));
+        if (r.ok && payload.duplicate) duplicate++;
+        else if (r.ok) saved++;
         else review++;
       }
       status.textContent = `ตรวจ ${data.scanned || 0} อีเมล · บันทึกใหม่ ${saved} · ซ้ำ ${duplicate} · ต้องตรวจสอบ ${review}`;

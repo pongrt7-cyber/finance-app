@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1E2A44">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=20261002-nav2">
 <link rel="stylesheet" href="css/income.css">
 </head>
 <body>
@@ -20,7 +20,21 @@
   <header class="topbar">
     <div class="topbar-inner">
       <h1>สมุดเงินของฉัน</h1>
-      <button id="btnHeaderSettings" class="icon-btn" aria-label="ตั้งค่า">⚙</button>
+      <button id="latestBoxBtn" class="latest-box-btn" aria-label="รายการล่าสุด" aria-expanded="false">
+        <span class="latest-box-icon">▣</span>
+        <span class="latest-box-copy">
+          <small>รายการล่าสุด</small>
+          <strong id="latestBoxTitle">ยังไม่มีรายการ</strong>
+        </span>
+        <span id="latestBoxAmount" class="latest-box-amount">—</span>
+      </button>
+      <div id="latestBoxPanel" class="latest-box-panel hidden" role="dialog" aria-label="รายการล่าสุด">
+        <div class="latest-box-head">
+          <strong>รายการล่าสุด</strong>
+          <button id="latestBoxClose" type="button" class="latest-box-close" aria-label="ปิด">×</button>
+        </div>
+        <div id="latestBoxList"></div>
+      </div>
     </div>
   </header>
 
@@ -42,6 +56,13 @@
         <p class="ticket-sub">ใช้ได้อีกวันละ ~<b id="dashDailyBudget">฿0</b></p>
       </div>
 
+      <div class="dashboard-summary">
+        <div class="dashboard-stat"><span>รายรับ</span><b id="dashIncome">฿0</b></div>
+        <div class="dashboard-stat"><span>รายจ่าย</span><b id="dashExpense">฿0</b></div>
+        <div class="dashboard-stat"><span>เหลือ</span><b id="dashRemainStat">฿0</b></div>
+        <div class="dashboard-stat"><span>เงินเหลือ</span><b id="dashSavingsPct">0%</b></div>
+      </div>
+
       <div class="quick-actions">
         <button class="qa-btn qa-expense" onclick="openAddTxn('expense')">
           <span class="qa-icon">−</span> บันทึกรายจ่าย
@@ -49,17 +70,6 @@
         <button class="qa-btn qa-income" onclick="openAddTxn('income')">
           <span class="qa-icon">+</span> บันทึกรายรับ
         </button>
-      </div>
-
-      <div id="tctWidget" class="card tct-card hidden">
-        <div class="card-head">
-          <p class="card-title">สิทธิ์โครงการ "ไทยช่วยไทย"</p>
-        </div>
-        <div class="ticket-row">
-          <span class="mono" id="tctUsed">฿0</span>
-          <span class="tct-remain">เหลือ <b class="mono" id="tctRemain">฿0</b></span>
-        </div>
-        <div class="ticket-bar"><div id="tctBar" class="ticket-bar-fill tct-fill"></div></div>
       </div>
 
       <div id="budgetWidget" class="card hidden">
@@ -76,20 +86,14 @@
         <p id="categoryEmpty" class="empty-note hidden">ยังไม่มีรายจ่ายเดือนนี้</p>
       </div>
 
-      <div class="card">
-        <div class="card-head"><p class="card-title">รายการล่าสุด</p></div>
-        <ul id="recentList" class="ledger-list"></ul>
-        <p class="swipe-hint">ปัดซ้ายที่รายการเพื่อแก้ไข/ลบ</p>
-      </div>
-
     </section>
 
     <!-- ============ STATS ============ -->
     <section id="view-stats" class="view hidden">
       <div class="segmented" id="statsRangeTabs">
-        <button data-range="today" class="seg-btn active">วันนี้</button>
+        <button data-range="today" class="seg-btn">วันนี้</button>
         <button data-range="week" class="seg-btn">สัปดาห์</button>
-        <button data-range="month" class="seg-btn">เดือนนี้</button>
+        <button data-range="month" class="seg-btn active">เดือนนี้</button>
         <button data-range="year" class="seg-btn">ปีนี้</button>
       </div>
 
@@ -128,36 +132,31 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><p class="card-title">วงเงิน "ไทยช่วยไทย" ต่อเดือน</p></div>
-        <label class="field-label">จำนวนเงิน (฿)</label>
-        <input id="setTctLimit" type="number" class="field-input" placeholder="0 = ปิดการแสดงผล">
-        <button class="btn-primary" onclick="saveTctLimit()">บันทึกวงเงิน</button>
-      </div>
-
-      <div class="card">
         <div class="card-head"><p class="card-title">ข้อมูล</p></div>
         <div class="settings-actions">
           <a class="btn-secondary" href="/api/data/export/csv">Export CSV</a>
           <a class="btn-secondary" href="/api/data/export/json">Export JSON</a>
-          <a class="btn-secondary" style="color: var(--ink-red);" href="admin.html">เข้าสู่ Admin</a>
         </div>
       </div>
     </section>
 
   </main>
 
-  <nav class="bottomnav">
+  <nav class="bottomnav" aria-label="เมนูหลัก">
     <button class="nav-btn active" data-view="dashboard">
       <span class="nav-icon">⌂</span><span>หน้าหลัก</span>
     </button>
     <button class="nav-btn" data-view="stats">
       <span class="nav-icon">▤</span><span>สถิติ</span>
     </button>
+    <button class="nav-btn" data-view="monthly">
+      <span class="nav-icon">◫</span><span>รายเดือน</span>
+    </button>
+    <button class="nav-btn" data-view="gmail">
+      <span class="nav-icon">✉</span><span>Gmail</span>
+    </button>
     <button class="nav-btn" data-view="settings">
       <span class="nav-icon">⚙</span><span>ตั้งค่า</span>
-    </button>
-    <button class="nav-btn" data-view="gmail-audit" onclick="openGmailAudit(); return false;">
-      <span class="nav-icon">✉</span><span>Gmail Audit</span>
     </button>
   </nav>
 
@@ -172,15 +171,6 @@
 
       <!-- Expense form -->
       <div id="formExpense">
-        <div class="ai-row">
-          <input id="aiTextInput" placeholder="พิมพ์เช่น 7-Eleven 58 บาท" class="field-input">
-          <button onclick="parseAiText()" class="btn-ai">AI</button>
-        </div>
-        <label class="field-label">หรืออัปโหลดสลิป/ใบเสร็จ</label>
-        <input id="aiImageInput" type="file" accept="image/*" capture="environment" class="field-file">
-
-        <hr class="divider">
-
         <label class="field-label">จำนวนเงิน</label>
         <input id="expAmount" type="number" class="field-input" inputmode="decimal">
 
@@ -199,9 +189,8 @@
 
         <label class="field-label">วิธีชำระเงิน</label>
         <div class="quick-tags" id="paymentTags">
-          <button type="button" class="tag-btn active" data-payment="เงินสด" onclick="selectPayment('เงินสด')">เงินสด</button>
-          <button type="button" class="tag-btn" data-payment="โอน" onclick="selectPayment('โอน')">โอน</button>
-          <button type="button" class="tag-btn" data-payment="ไทยช่วยไทย" onclick="selectPayment('ไทยช่วยไทย')">ไทยช่วยไทย</button>
+          <button type="button" class="tag-btn" data-payment="เงินสด" onclick="selectPayment('เงินสด')">เงินสด</button>
+          <button type="button" class="tag-btn active" data-payment="โอน" onclick="selectPayment('โอน')">โอน</button>
         </div>
 
         <button class="btn-primary btn-expense" onclick="saveExpense()">บันทึกรายจ่าย</button>
@@ -241,9 +230,9 @@
 
   <script src="js/api.js"></script>
   <script src="js/toast.js"></script>
-  <script src="js/app.js"></script>
-  <script src="js/gmail.js"></script>
-  <script src="js/gmail-audit.js"></script>
-  <script src="js/monthly.js"></script>
+  <script src="js/app.js?v=20261003-ui3"></script>
+  <script src="js/gmail.js?v=20261003-ui3"></script>
+  <script src="js/gmail-audit.js?v=20261002-ui2"></script>
+  <script src="js/monthly.js?v=20261002-ui2"></script>
 </body>
 </html>
